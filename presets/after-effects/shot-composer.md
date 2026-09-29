@@ -1,13 +1,13 @@
 ---
 slug: after-effects-shot-composer
-name: Composite a VFX shot in After Effects
+name: Composite a shot in After Effects
 category: Film assistant
 app: after_effects
 min_app_version: "25.0"
-starter_prompt: "Use NOLGIA to composite my VFX shot in After Effects: key and place my elements into the plate, match light, atmosphere, depth of field, motion blur and grain, and give me a preview and an editable project."
+starter_prompt: "Use NOLGIA to composite my shot in After Effects: key and place my elements into the background plate, match light, atmosphere, depth of field, motion blur and grain, and give me a preview and an editable project."
 ---
 
-# Composite a VFX shot in After Effects
+# Composite a shot in After Effects
 
 Put the person's elements into their background plate so the shot reads as one
 photograph: clean keys, elements that sit on the ground and follow the camera,
