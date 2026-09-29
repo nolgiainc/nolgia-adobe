@@ -33,6 +33,8 @@ import datetime
 import json
 import re
 import secrets
+import select
+import socket
 import threading
 import time
 import uuid
@@ -427,6 +429,17 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(401, "Unauthorized", "authenticated user is required")
         return info
 
+    def client_gone(self):
+        """The caller hung up. The real API sees its request context end and
+        stops waiting, so it never hands a command to a poll nobody reads."""
+        try:
+            readable, _, _ = select.select([self.connection], [], [], 0)
+            if not readable:
+                return False
+            return self.connection.recv(1, socket.MSG_PEEK) == b""
+        except (OSError, ValueError):
+            return True
+
     def from_agent(self):
         return (self.headers.get("X-Nolgia-Surface") or "").strip().lower() == "hermes"
 
@@ -648,6 +661,10 @@ def next_command(h, session_id):
         deadline = now() + wait
         claimed = None
         while True:
+            # A caller that hung up must not be handed a command it will
+            # never receive (bridge.go NextBridgeCommand).
+            if h.client_gone():
+                return 499
             at = now()
             queued = sorted((c for c in st.commands.values()
                              if c["session_id"] == session_id and c["status"] == "queued" and c["expires_at"] > at),
