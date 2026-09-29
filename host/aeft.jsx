@@ -265,7 +265,45 @@
     };
   };
 
+  // A footage item (not a comp) with this name or id, else null.
+  function footageItem(target) {
+    if (target === null || target === undefined || target === "") return null;
+    var items = project().items;
+    for (var i = 1; i <= items.length; i++) {
+      var it = items[i];
+      if (isComp(it)) {
+        if (it.name === String(target) || String(it.id) === String(target)) return null;
+        continue;
+      }
+      if (it instanceof FootageItem && (it.name === String(target) || String(it.id) === String(target))) return it;
+    }
+    return null;
+  }
+
+  // A still of a footage item: a temporary comp around it, removed right
+  // away (After Effects still writes the frame it was asked for).
+  function previewFootage(item, args) {
+    var rate = item.frameRate > 0 ? item.frameRate : 24;
+    var still = item.mainSource && item.mainSource.isStill;
+    var frames = still ? 1 : Math.max(1, Math.round(item.duration * rate));
+    var frame = args.frame === null || args.frame === undefined ? 0 : args.frame;
+    if (frame < 0 || frame >= frames) N.fail("Frame " + frame + " is outside " + item.name + " (frames 0 to " + (frames - 1) + ").");
+    var file = N.file(args.folder + "/frame.png");
+    A.beginUndo("NOLGIA: preview");
+    try {
+      var temp = project().items.addComp("NOLGIA preview", item.width, item.height, item.pixelAspect, frames / rate, rate);
+      temp.layers.add(item);
+      temp.saveFrameToPng(frame / rate, file);
+      temp.remove();
+    } finally {
+      A.endUndo();
+    }
+    return { path: file.fsName, width: item.width, height: item.height, frame: frame, source: item.name, label: item.name, background: "#000000" };
+  }
+
   A.preview = function (args) {
+    var footage = footageItem(args.target);
+    if (footage) return previewFootage(footage, args);
     var c = targetComp(args.target, true);
     var frame = args.frame === null || args.frame === undefined ? frameOf(c, c.time) : args.frame;
     if (frame < 0 || frame >= frameCount(c)) {

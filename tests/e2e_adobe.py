@@ -246,7 +246,18 @@ class Caller:
         self.app = None
         self.assets = []
 
-    def http(self, method, path, body=None, raw=False, auth=True, url=None, headers=None):
+    def http(self, method, path, body=None, raw=False, auth=True, url=None, headers=None, tries=4):
+        """One request. A TLS handshake that times out never reached the
+        server, so it is retried."""
+        for attempt in range(tries):
+            try:
+                return self._http(method, path, body, raw, auth, url, headers)
+            except urllib.error.URLError as err:
+                if attempt == tries - 1 or "handshake" not in str(err.reason):
+                    raise
+                time.sleep(2)
+
+    def _http(self, method, path, body=None, raw=False, auth=True, url=None, headers=None):
         data = None if body is None else (body if isinstance(body, bytes) else json.dumps(body).encode())
         req = urllib.request.Request(url or self.root + path, data=data, method=method, headers=headers or {})
         if auth:
@@ -623,6 +634,10 @@ def _import(caller, app, png):
         assert res["comp"] == "E2E Comp" and res["layer_index"] == 1, res
     if app == "illustrator":
         assert res["type"] == "RasterItem" and res["layer"] == "NOLGIA imports", res
+    if app == "after_effects":
+        # A footage item (not only a comp) can be previewed.
+        shot = caller.ok("preview", {"comp": res["imported"][0]})
+        assert shot["source"] == res["imported"][0] and jpeg_or_png_size(caller.asset_bytes(shot["asset_id"])) == (64, 36), shot
 
 
 def _import_audio(caller, wav):

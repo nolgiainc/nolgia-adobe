@@ -64,7 +64,22 @@ for `nolgia_app_run` is ExtendScript.
 - Add effects and reach properties by match name, never by display name, which
   changes with the app's language: `layer.property("ADBE Effect Parade")
   .addProperty("ADBE Gaussian Blur 2")`, `layer.property("ADBE Transform Group")
-  .property("ADBE Position")`. Keylight is `"Keylight 906"`.
+  .property("ADBE Position")`. Do not guess match names: `app.effects` lists
+  every installed effect's `displayName` and `matchName` (Keylight is
+  `"Keylight 906"`, Match Grain `"VISINF Grain Duplication"`, CC Rainfall
+  `"CSRainfall"`). An effect's parameters are reached by index or by their own
+  match names; list them once (`effect.property(i).name`) before setting them.
+- Popup (menu) parameters count from 1. Some values (custom ones such as
+  histograms) throw when read or turned into text: read only what you need.
+- Moving an effect (`effect.moveTo(i)`) makes existing references to it
+  invalid ("Object is invalid"): get it again with `effects.property(i)`.
+- Mask vertices are in the layer's own pixels, not the comp's: on a scaled or
+  moved layer, convert the comp points first.
+- A step that fails halfway keeps what it changed before the error. Write steps
+  so they can run twice (find the layer or effect before adding it again).
+- Menu commands (`app.executeCommand(app.findMenuCommandId("..."))`, for layer
+  styles and the like) act on the selected layers and need the comp open in the
+  viewer (`comp.openInViewer()`).
 - A property with keyframes ignores `setValue`; use `setValueAtTime` or remove
   the keyframes first. After setting an expression, read `prop.expressionError`:
   an empty string means it works.
