@@ -1043,12 +1043,15 @@ def main():
     parser.add_argument("--device-interval", type=int, default=5)
     parser.add_argument("--auto-approve-after", type=int, default=None,
                         help="approve a device code on its Nth poll")
+    parser.add_argument("--poll-wait-seconds", type=int, default=MAX_WAIT,
+                        help="poll_wait_seconds the session answers (shorter long polls in tests)")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     server = MockBridgeServer(args.host, args.port, verbose=args.verbose,
                               tokens=tuple(args.token or ["test-token"]),
                               device_interval=args.device_interval,
-                              auto_approve_after=args.auto_approve_after)
+                              auto_approve_after=args.auto_approve_after,
+                              poll_wait_seconds=args.poll_wait_seconds)
     print("NOLGIA mock API listening on %s" % server.base_url, flush=True)
     try:
         server.httpd.serve_forever()

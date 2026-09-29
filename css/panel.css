@@ -1,0 +1,363 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright (C) 2026 NOLGIA Inc */
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("../fonts/IBMPlexSans-Regular.woff2") format("woff2");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("../fonts/IBMPlexSans-Medium.woff2") format("woff2");
+  font-weight: 500;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("../fonts/IBMPlexSans-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+}
+
+:root {
+  --canvas: #0a0d14;
+  --surface: #121722;
+  --surface-2: #19202e;
+  --line: #242c3c;
+  --text: #ffffff;
+  --muted: #9aa3b5;
+  --faint: #667085;
+  --orange: #ff6a1a;
+  --orange-hover: #ff7d38;
+  --green: #3ecf8e;
+  --amber: #f5b544;
+  --red: #ff5d5d;
+  --radius: 6px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--canvas);
+  color: var(--text);
+  font-family: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-size: 12.5px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+body {
+  padding: 14px 14px 12px;
+  min-width: 240px;
+}
+
+button {
+  font: inherit;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.brand {
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: 0.14em;
+}
+
+.app {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.status {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px 11px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+}
+
+.dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 2px;
+  background: var(--faint);
+}
+.dot.connected {
+  background: var(--green);
+}
+.dot.busy {
+  background: var(--amber);
+}
+.dot.problem {
+  background: var(--red);
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 500;
+  cursor: pointer;
+}
+.button:hover {
+  border-color: #3a4459;
+}
+.button.primary {
+  background: var(--orange);
+  border-color: var(--orange);
+  color: #0a0d14;
+  font-weight: 600;
+}
+.button.primary:hover {
+  background: var(--orange-hover);
+}
+.button.wide {
+  width: 100%;
+  height: 34px;
+}
+.button.small {
+  height: 24px;
+  padding: 0 9px;
+  font-size: 11.5px;
+}
+.button.quiet {
+  background: transparent;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+}
+.row > .button {
+  flex: 1;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.label {
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.code {
+  font-family: "IBM Plex Mono", Consolas, "SF Mono", monospace;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  margin: 4px 0 8px;
+  user-select: text;
+}
+
+.account {
+  color: var(--muted);
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account strong {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+}
+.switch:first-of-type {
+  border-top: none;
+}
+.switch .text {
+  display: flex;
+  flex-direction: column;
+}
+.switch .hint {
+  color: var(--faint);
+  font-size: 11px;
+}
+.toggle {
+  flex: none;
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 4px;
+  background: #0d1119;
+  border: 1px solid #333d51;
+  transition: background 0.12s, border-color 0.12s;
+}
+.toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  background: #5b6478;
+  transition: left 0.12s, background 0.12s;
+}
+.toggle.on {
+  background: #1f2a3d;
+  border-color: #8fa0bf;
+}
+.toggle.on::after {
+  left: 18px;
+  background: #ffffff;
+}
+
+.approval {
+  border-color: var(--orange);
+}
+.approval .title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.approval pre {
+  margin: 0 0 10px;
+  padding: 8px 9px;
+  max-height: 180px;
+  overflow: auto;
+  background: #070910;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-family: "IBM Plex Mono", Consolas, "SF Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+  user-select: text;
+}
+.approval pre.full {
+  max-height: 420px;
+}
+.approval .more {
+  color: var(--muted);
+  font-size: 11px;
+  margin: -6px 0 10px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+.approval .note {
+  color: var(--faint);
+  font-size: 11px;
+  margin-bottom: 10px;
+}
+
+.activity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 4px 0 6px;
+}
+.activity-head .heading {
+  font-weight: 600;
+}
+.activity {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.activity li {
+  display: grid;
+  grid-template-columns: 58px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+}
+.activity li:first-child {
+  border-top: none;
+}
+.activity .time {
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+.activity .kind {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity .kind small {
+  color: var(--faint);
+  margin-left: 4px;
+}
+.activity .state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+.activity .state i {
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--faint);
+}
+.activity .succeeded i {
+  background: var(--green);
+}
+.activity .failed i,
+.activity .expired i,
+.activity .cancelled i {
+  background: var(--red);
+}
+.activity .running i,
+.activity .received i,
+.activity .approval i {
+  background: var(--amber);
+}
+.activity .empty {
+  display: block;
+  color: var(--faint);
+}
+
+.foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--faint);
+  font-size: 11px;
+}
+.message {
+  color: var(--muted);
+  margin: -4px 0 12px;
+}
+.hidden {
+  display: none !important;
+}
