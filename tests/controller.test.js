@@ -241,6 +241,34 @@ test("export renders, uploads and cleans up; project files stay local", async ()
   await finish(ctl);
 });
 
+test("an image opened as a document is saved as .ai next to it, not copied", async () => {
+  const folder = support.tempDir();
+  const image = path.join(folder, "poster.png");
+  fs.writeFileSync(image, support.png());
+  const host = fakeHost(
+    {
+      snapshot: () => ({ document: { name: "poster.png", path: image }, dirty: false }),
+      project_file: () => ({ path: image, dirty: false }),
+      save: (args) => ({ path: args.path }),
+    },
+    "ILST"
+  );
+  const ctl = new Controller(host, {
+    environ: { NOLGIA_TOKEN: support.TOKEN, NOLGIA_API_URL: server.base, NOLGIA_BRIDGE_AUTOCONNECT: "1" },
+  });
+  ctl.start();
+  await support.until(() => ctl.worker && ctl.worker.state === "connected", 10, "connected");
+  const id = await support.enqueue(server, "illustrator", "export", { format: "ai" });
+  let cmd;
+  do cmd = await support.waitCommand(server, id, 10);
+  while (cmd.status === "queued" || cmd.status === "running");
+  assert.equal(cmd.status, "succeeded", cmd.error);
+  assert.equal(cmd.result.path, path.join(folder, "poster.ai"));
+  assert.match(cmd.result.note, /was a \.png file, so it is now saved as \.ai next to it/);
+  assert.deepEqual(fs.readdirSync(folder), ["poster.png"], "the image is not copied");
+  await finish(ctl);
+});
+
 test("save resolves paths next to the project; open over unsaved changes asks first", async () => {
   const folder = support.tempDir();
   const other = path.join(folder, "other.aep");

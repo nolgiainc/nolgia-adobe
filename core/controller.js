@@ -67,7 +67,8 @@ class Controller {
     this.broadcastTimer = null;
     this.snapshotTimer = null;
     this.closedReason = null;
-    this.fallbackDir = path.join(this.dir, "downloads");
+    // Imports while nothing is saved yet stay where the person can find them.
+    this.fallbackDir = path.join(host.documents || path.join(os.homedir(), "Documents"), "NOLGIA imports");
     this.hostReady = null;
   }
 
@@ -839,6 +840,26 @@ class Controller {
       };
     }
     const current = info.path;
+    const currentExt = path.extname(current).slice(1).toLowerCase();
+    if (!this.app.projectExts.includes(currentExt)) {
+      // An image or PDF opened as a document is not a project file yet:
+      // save it as one next to the source, which stays as it is.
+      const target = this.freePath(
+        path.dirname(current),
+        args.filename ? this.stem(args.filename) : path.parse(current).name,
+        ext
+      );
+      const saved = await this.hostOrFail("save", { path: target }, command);
+      return {
+        asset_id: null,
+        format: this.app.projectExt,
+        path: saved.path,
+        filename: path.basename(saved.path),
+        note:
+          "The " + this.app.projectWord + " was a ." + currentExt + " file, so it is now saved as ." + this.app.projectExt +
+          " next to it and stays open from that file; the ." + currentExt + " is unchanged. " + PROJECT_NOTE,
+      };
+    }
     const folder = path.dirname(current);
     const base = args.filename ? this.stem(args.filename) : path.parse(current).name + "-copy";
     const target = this.freePath(folder, base, ext);
