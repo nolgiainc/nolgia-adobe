@@ -71,10 +71,17 @@ for `nolgia_app_run` is ExtendScript.
   match names; list them once (`effect.property(i).name`) before setting them.
 - Popup (menu) parameters count from 1. Some values (custom ones such as
   histograms) throw when read or turned into text: read only what you need.
-- Moving an effect (`effect.moveTo(i)`) makes existing references to it
-  invalid ("Object is invalid"): get it again with `effects.property(i)`.
+- Adding, removing or moving an effect (`addProperty`, `remove`, `moveTo`) makes
+  existing references to the effects on that layer invalid ("Object is
+  invalid"), and every line after that fails: get them again by name or match
+  name after each change.
 - Mask vertices are in the layer's own pixels, not the comp's: on a scaled or
-  moved layer, convert the comp points first.
+  moved layer, convert the comp points first, and on a flipped layer (negative
+  scale) mirror them.
+- Track mattes can point at any layer: `layer.setTrackMatte(matteLayer,
+  TrackMatteType.LUMA)` (or `ALPHA`), and the matte layer is switched off for you.
+  `comp.layers.precompose(indices, name, true)` moves layers into a new comp
+  and leaves one layer in their place.
 - A step that fails halfway keeps what it changed before the error. Write steps
   so they can run twice (find the layer or effect before adding it again).
 - Menu commands (`app.executeCommand(app.findMenuCommandId("..."))`, for layer
