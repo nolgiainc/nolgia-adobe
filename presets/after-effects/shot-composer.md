@@ -82,10 +82,15 @@ plate. Everything stays live in a new comp, so they can keep adjusting it.
    scale and position so the size fits the plate's perspective (a person is
    about 1.7 m: compare with doors, curbs, other people at the same depth) and
    the feet sit on the ground line. Scaling and moving the plate instead is
-   fine when the element is full frame: it keeps the element sharp. Read where
-   the sun is from the plate's own shadows on the ground near the element, not
-   from the brightest patch of sky, and flip the element (scale x -100) when its
-   key light is on the other side.
+   fine when the element is full frame: it keeps the element sharp. Leave room
+   below the feet for the shadow and for any push-in in the delivery. **Match
+   the key light direction.** Read where the sun is from the plate's own
+   shadows on the ground (which way they fall, how long they are) and from where
+   the sky is brightest, and decide both left or right and front or behind. A
+   flip (scale x -100) only fixes left and right. When the plate is backlit (the
+   sun ahead of the camera, shadows falling toward it) and the take is lit from
+   the front, keep the take as it is and fix it in step 7: a rim on the sun side
+   and less light on the front.
 6. **Follow the camera.** A locked-off plate needs no track. For a moving
    camera: apply the 3D Camera Tracker or set up Track Motion on the plate and
    ask the person to press Track (scripts cannot), then parent the element to a
@@ -107,18 +112,35 @@ plate. Everything stays live in a new comp, so they can keep adjusting it.
    a bright band just inside the edge); over the element, a copy of the plate
    blurred about 30 px, in Screen at 50 to 70 percent, with that comp as its
    track matte (`wrapLayer.setTrackMatte(matteLayer, TrackMatteType.LUMA)`).
-   For a coloured rim instead (a neon sign, a sunset behind), an Inner Glow layer
-   style in the light's colour at 20 to 40 percent (select the layer with the
-   comp open in the viewer, then
+   **Backlight rim** when the sun is behind or beside the element: take 0.1 to
+   0.3 stops off its front (Lumetri Exposure) so it sits a little under the
+   backlit plate, then add a rim on the sun side only. The rim matte is a comp
+   holding the silhouette filled white with a copy filled black, blurred 3 to 5
+   px and moved 6 to 12 px away from the sun, on top: what is left is a band on
+   the edges that face the light. Over the element, a copy of the element
+   brightened and warmed (Lumetri Temperature up, Exposure up about 2 stops, an
+   Exposure effect for more), in Screen, with the rim comp as its luma track
+   matte, so hair strands and knit keep their own texture. Fade it out below the
+   hips with a Linear Wipe (angle 0, feathered) so it stays on hair, shoulders
+   and sleeves and does not draw lines down the legs. Look at it at 100 percent:
+   a sheen, not a glow. For a coloured rim (a neon sign, a sunset behind), an
+   Inner Glow layer style in the light's colour at 20 to 40 percent also works
+   (select the layer with the comp open in the viewer, then
    `app.executeCommand(app.findMenuCommandId("Inner Glow"))`, and set
    `innerGlow/color`, `innerGlow/opacity`, `innerGlow/blur` under
    `"ADBE Layer Styles"`).
-8. **Ground it.** A contact shadow right under the feet: a dark solid in the
-   plate's shadow colour with a feathered elliptical mask, Multiply at 40 to 60
-   percent. Then the cast shadow, a feathered polygon from the feet in the
-   direction the plate's own shadows run, Multiply at 30 to 45 percent. A
-   projected copy of the silhouette only reads well when the light is low and to
-   the side; with the sun ahead or behind, it shows as a detached shape. On wet
+8. **Ground it.** A thin contact shadow right at the soles: a dark solid in the
+   plate's shadow colour with a small, flat, feathered elliptical mask, Multiply
+   at 30 to 45 percent. A big dark ellipse under the feet reads as a blob. Then
+   the cast shadow, falling away from the sun the way the plate's own shadows
+   run: the silhouette (the key precomp, filled with the shadow colour, blurred
+   6 to 10 px) with its anchor at the soles, flipped and flattened onto the
+   ground (scale y negative), rotated to lean like the nearest plate shadows,
+   Multiply at 35 to 45 percent. A low sun makes it long (scale y about -80 to
+   -90). With the sun behind, it falls toward the camera and runs off the bottom
+   of the frame; what shows is the start of a soft strip from each foot. With
+   the sun to the side, a shorter polygon that fades with a Linear Wipe also
+   works. On wet
    or shiny ground, a reflection too: a copy of the element flipped at the feet
    (scale y negative), 30 to 45 percent opacity, Gaussian Blur, a little
    Turbulent Displace, and a Linear Wipe at 180 degrees so it fades away from
@@ -130,16 +152,26 @@ plate. Everything stays live in a new comp, so they can keep adjusting it.
    Original off; for drifting fog, Fractal Noise in Screen at low opacity. Do not
    use a Fill effect on the element for haze: on a keyed layer after Lumetri it
    hid the layer.
-10. **Match depth of field.** Blur the plate, not the element, when the element
-    is the subject: `"ADBE Camera Lens Blur"` (1 Blur Radius, 3 Shape, 4
-    Roundness, 10 Blur Map layer, 12 Placement 2 to stretch the map, 13 Blur
-    Focal Distance, 17 Highlight Gain) with a depth map: a comp holding a black
-    to white Gradient Ramp (`"ADBE Ramp"`), black at the element's feet and white
-    toward the horizon, plus a second ramp in Lighten mode that greys toward the
-    bottom of frame so the ground nearer the camera softens too. Put the map comp
-    in the shot, switched off, and pick it as the Blur Map. Blur an element that
-    is off the focal plane the same way until its edges match plate detail at
-    that distance.
+10. **Match depth of field.** Set the focal plane at the element's feet: the
+    ground around and just in front of the feet must be as sharp as the element,
+    with blur growing with distance behind it and a little toward the camera.
+    Blur the plate, not the element, when the element is the subject:
+    `"ADBE Camera Lens Blur"` (1 Blur Radius, 3 Shape, 4 Roundness, 10 Blur Map
+    layer, 12 Placement 2 to stretch the map, 13 Blur Focal Distance, 17
+    Highlight Gain) with a depth map in the plate's own pixels: a comp holding a
+    Gradient Ramp (`"ADBE Ramp"`) that is black from the feet line (convert the
+    feet's comp position into plate pixels through the plate's scale and
+    position) to 20 to 40 px above it, and white at the horizon, plus a second
+    ramp in Lighten mode that stays black to just below the feet and greys to
+    about 0.3 at the bottom of frame. Put the map comp in the shot, switched off,
+    and pick it as the Blur Map. Then compare sharpness at 100 percent: the
+    element's edges against the ground at its feet. A generated plate is often
+    softer than a keyed take; bring the plate up where the element stands with
+    `"ADBE Unsharp Mask"` before the blur (2 Amount 60 to 90, 3 Radius about 2;
+    parameter 1 is Color Mode), and take the element down with a 1 to 1.5 px
+    Gaussian Blur so its key edges are no sharper than the plate's lens. Blur an
+    element that is off the focal plane the same way until its edges match plate
+    detail at that distance.
 11. **Match motion blur.** Elements that move in the comp get layer motion blur
     on and the comp's motion blur on, with the shutter angle that matches the
     plate's blur (180 degrees when unsure). Footage with blur already in it
@@ -147,7 +179,11 @@ plate. Everything stays live in a new comp, so they can keep adjusting it.
 12. **Match grain.** Match Grain (`"VISINF Grain Duplication"`: parameter 1 is
     the Viewing Mode, set 5 for Final Output; parameter 2 the noise source
     layer, the plate) on each element, or Add Grain (`"VISINF Grain Implant"`)
-    tuned by eye. Grain goes on every element and never on the plate.
+    tuned by eye. Grain goes on every element and never on the plate. When the
+    plate was sharpened or blurred in step 10, its own grain changed too: then one
+    Add Grain on the `Shot grade` adjustment layer over everything (1 Viewing
+    Mode 3 for Final Output, 11 Intensity about 0.5, 12 Size about 0.9) ties the
+    frame together better than grain per element.
 13. **Missing layers.** Build what can be procedural in After Effects. Generate
     only what cannot, after saying the cost: `nolgia_text_to_image` (about 2 to
     8 credits for a still) or `nolgia_image_to_video` (about 12 to 50 credits for
@@ -164,9 +200,12 @@ plate. Everything stays live in a new comp, so they can keep adjusting it.
   at the edges: no green or blue fringe, no dark or bright halo, hair and motion
   edges soft, not chewed.
 - Blacks and whites of each element must match the plate's at the same depth;
-  the light must come from the same side; the element must not float (contact
-  shadow, feet on the ground) and must not slide against the plate between
-  frames.
+  the light must come from the same side and the same front or back (a rim on
+  the sun side when the plate is backlit); the element must not float (feet on
+  the ground, the shadow falling the way the plate's shadows fall) and must not
+  slide against the plate between frames.
+- Focus: at 100 percent, the ground at the element's feet is as sharp as the
+  element, and softer with distance from there.
 - Grain: in a flat area, the element and the plate must look equally noisy.
 - Colour: the median hue of the costume's saturated colours in the composite is
   within about 3 degrees of the take (compare the first frame of the take with a
@@ -179,11 +218,12 @@ Save the project, export an `mp4` of the comp (the whole shot, or a 3 to 5
 second range for a long one) and show a still. Offer a before and after too: a
 comp `NOLGIA <plate name> before-after` with the raw take over the finished
 comp, revealed by a mask that sweeps across the frame with a thin line at its
-edge, small `BEFORE` and `AFTER` labels in the top corners, and a slow push-in,
-exported as `mp4`; it shows the work at a glance. The take must sit exactly
-where it sits in the shot (same flip and position), and a mask on a flipped
-layer is mirrored. Tell the person: the comp and
+edge, small `BEFORE` and `AFTER` labels in the top corners, and a slow push-in
+(a few percent, anchored so the head and the feet with their shadow stay in
+frame to the last frame), exported as `mp4`; it shows the work at a glance. The
+take must sit exactly where it sits in the shot (same flip and position), and a
+mask on a flipped layer is mirrored. Tell the person: the comp and
 folder names, the controls they are most likely to adjust (Keylight Screen Gain
 and Clip values, the colour correction on each element, grain amount, blur
-radius, light wrap opacity, shadow opacity), and which layers NOLGIA generated and what they
+radius, rim and light wrap opacity, shadow opacity), and which layers NOLGIA generated and what they
 cost.
