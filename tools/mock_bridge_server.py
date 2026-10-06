@@ -16,13 +16,14 @@ Under /v1:
   bridge, caller GET /bridge/sessions, POST /bridge/commands,
                  GET /bridge/commands/{id}?wait=N, POST /bridge/commands/{id}/cancel
                  (a caller is the NOLGIA Agent when it sends X-Nolgia-Surface: hermes)
-  assets         POST /assets/uploads, POST /assets/uploads/{id}/complete, GET /assets/{id}
+  assets         POST /assets/uploads, POST /assets/uploads/{id}/complete, GET /assets/{id},
+                 GET /assets?project_id=&sort=&limit=&cursor= (ready assets; pages of `limit`)
   color presets  GET /color-presets, GET /color-presets/{slug}/cube (public, no token needed; a few
                  made-up presets with small 5-point cubes, not the real looks)
 Signed storage URLs (a bearer token is refused, as signed URLs would):
   PUT /storage/uploads/{upload_id}, GET /storage/assets/{asset_id}
 Test helpers (no auth):
-  POST /mock/assets?filename=&content_type=   raw body -> a ready asset
+  POST /mock/assets?filename=&content_type=[&project_id=]   raw body -> a ready asset
   GET  /mock/assets/{id}/bytes, GET /mock/state, POST /mock/reset,
   POST /mock/device/approve {user_code} | {"all": true}, POST /mock/device/deny
 
@@ -260,7 +261,7 @@ class MockState:
             "tags": a["tags"],
             "status": a["status"],
             "favorite": False,
-            "projects": [],
+            "projects": [{"id": pid} for pid in a.get("project_ids", [])],
         }
 
     def new_asset(self, user_id, filename, content_type, size_bytes, display_name=None, tags=None, data=None):
@@ -276,7 +277,9 @@ class MockState:
             "status": "ready" if data is not None else "uploading",
             "bytes": data,
             "created_at": now(),
+            "seq": len(self.assets),
             "sig": secrets.token_hex(8),
+            "project_ids": [],
         }
         return self.assets[asset_id]
 
@@ -944,6 +947,48 @@ def complete_upload(h, upload_id):
     return h._send(200, view)
 
 
+ASSET_SORTS = ("created_at_desc", "created_at_asc", "name_asc", "name_desc")
+
+
+@route("GET", r"/v1/assets")
+def list_assets(h):
+    """GET /assets with the filters the plugins use: project_id, modality,
+    status (default ready), sort (default created_at_desc), limit (1 to 100,
+    default 25) and an opaque cursor."""
+    user = h.user()
+    q = h.query
+    sort = q.get("sort") or "created_at_desc"
+    if sort not in ASSET_SORTS:
+        raise bad_request("sort must be one of " + ", ".join(ASSET_SORTS))
+    try:
+        limit = int(q.get("limit") or 25)
+    except ValueError:
+        raise bad_request("Invalid format for parameter limit") from None
+    if not 1 <= limit <= 100:
+        raise bad_request("limit must be 1 to 100")
+    project_id = q.get("project_id")
+    if project_id is not None:
+        project_id = uuid_param(project_id, "project_id")
+    try:
+        offset = int((q.get("cursor") or "o:0").split(":", 1)[1])
+    except (IndexError, ValueError):
+        raise bad_request("invalid cursor") from None
+    status = q.get("status") or "ready"
+    st = h.state
+    with st.cond:
+        found = [a for a in st.assets.values() if a["user_id"] == user["user_id"] and a["status"] == status
+                 and (project_id is None or project_id in a["project_ids"])
+                 and (not q.get("modality") or modality(a["content_type"]) == q["modality"])]
+        if sort.startswith("created_at"):
+            found.sort(key=lambda a: (a["created_at"], a["seq"]), reverse=sort.endswith("desc"))
+        else:
+            found.sort(key=lambda a: (a["display_name"].lower(), a["seq"]), reverse=sort.endswith("desc"))
+        page = found[offset:offset + limit]
+        items = [st.asset_view(a, h.host) for a in page]
+    next_cursor = "o:%d" % (offset + limit) if offset + limit < len(found) else None
+    return h._send(200, {"items": items, "next_cursor": next_cursor, "total": len(found)})
+
+
 @route("GET", r"/v1/assets/([^/]+)")
 def get_asset(h, asset_id):
     user = h.user()
@@ -1020,6 +1065,8 @@ def mock_create_asset(h):
         owner = st.tokens[st.initial_tokens[0]]["user_id"]
         asset = st.new_asset(owner, filename, ctype, len(h.raw_body), h.query.get("display_name") or filename,
                              [], h.raw_body)
+        if h.query.get("project_id"):
+            asset["project_ids"].append(h.query["project_id"].lower())
         view = st.asset_view(asset, h.host)
     return h._send(201, view)
 
