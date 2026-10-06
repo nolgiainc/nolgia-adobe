@@ -17,6 +17,8 @@ Under /v1:
                  GET /bridge/commands/{id}?wait=N, POST /bridge/commands/{id}/cancel
                  (a caller is the NOLGIA Agent when it sends X-Nolgia-Surface: hermes)
   assets         POST /assets/uploads, POST /assets/uploads/{id}/complete, GET /assets/{id}
+  color presets  GET /color-presets, GET /color-presets/{slug}/cube (public, no token needed; a few
+                 made-up presets with small 5-point cubes, not the real looks)
 Signed storage URLs (a bearer token is refused, as signed URLs would):
   PUT /storage/uploads/{upload_id}, GET /storage/assets/{asset_id}
 Test helpers (no auth):
@@ -964,6 +966,47 @@ def download_asset(h, asset_id):
             raise HttpError(403, "AccessDenied", "bad or missing signature")
         data, ctype = asset["bytes"], asset["content_type"]
     return h._send(200, raw=data, content_type=ctype)
+
+
+# ------------------------------------------------------------ color presets
+
+# Stand-ins for the API's built-in color presets (GET /color-presets): the
+# same slugs and shape, but tiny 5-point cubes with a made-up tint instead of
+# the real 33-point looks.
+COLOR_PRESETS = (
+    ("kodak-portra-400", "Kodak Portra 400", "stills", (1.04, 1.0, 0.94)),
+    ("kodak-vision3-500t", "Kodak Vision3 500T", "motion", (0.98, 1.0, 1.05)),
+    ("fuji-superia-400", "Fuji Superia 400", "stills", (0.97, 1.03, 0.99)),
+    ("cinestill-800t", "CineStill 800T", "motion", (1.02, 0.98, 1.06)),
+)
+COLOR_PRESET_CUBE_SIZE = 5
+
+
+def color_preset_cube(name, tint):
+    n = COLOR_PRESET_CUBE_SIZE
+    lines = ['TITLE "Nolgia %s"' % name, "LUT_3D_SIZE %d" % n, "DOMAIN_MIN 0.0 0.0 0.0", "DOMAIN_MAX 1.0 1.0 1.0"]
+    for b in range(n):
+        for g in range(n):
+            for r in range(n):
+                rgb = [min(1.0, v / (n - 1.0) * k) for v, k in zip((r, g, b), tint)]
+                lines.append("%.6f %.6f %.6f" % tuple(rgb))
+    return ("\n".join(lines) + "\n").encode("ascii")
+
+
+@route("GET", r"/v1/color-presets")
+def list_color_presets(h):
+    presets = [{"slug": slug, "name": name, "description": "Mock %s look." % name, "category": category,
+                "group": "film"} for slug, name, category, _ in COLOR_PRESETS]
+    return h._send(200, {"version": 1, "presets": presets}, headers={"Cache-Control": "public, max-age=86400"})
+
+
+@route("GET", r"/v1/color-presets/([^/]+)/cube")
+def get_color_preset_cube(h, slug):
+    for known, name, _, tint in COLOR_PRESETS:
+        if known == slug:
+            return h._send(200, raw=color_preset_cube(name, tint), content_type="text/plain; charset=utf-8",
+                           headers={"Cache-Control": "public, max-age=86400"})
+    raise HttpError(404, "Not Found", "color preset not found")
 
 
 # ------------------------------------------------------------ test helpers
