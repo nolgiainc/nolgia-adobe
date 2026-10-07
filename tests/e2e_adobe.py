@@ -26,7 +26,12 @@ Usage (from WSL, on Windows with a Windows Python, or on macOS):
 The work folder must be one the apps can reach. On macOS the app dialogs are
 read and dismissed through System Events, which needs Accessibility access
 for the terminal (System Settings > Privacy & Security > Accessibility);
-without it the test runs on, but a dialog the app shows stays up.
+without it the test runs on, but a dialog the app shows stays up. Premiere
+Pro on macOS ignores AppleScript, its quit included, with or without NOLGIA
+installed (seen with 26.5.2), so the test quits it through the plugin with
+ExtendScript's app.quit(). Ask before running code would hold that for a
+click, so there the ask check is skipped; After Effects and Illustrator run
+it, and the code is shared.
 """
 
 import argparse
@@ -482,6 +487,10 @@ class Checks:
         print("PASS %-12s %-46s %5.1fs" % (app, name, time.time() - started), flush=True)
         return True
 
+    def skip(self, app, name, reason):
+        self.results.append((app, name, None, reason))
+        print("SKIP %-12s %-46s        %s" % (app, name, reason), flush=True)
+
 
 def build_and_install(win, opts):
     zxp = opts.zxp
@@ -522,10 +531,16 @@ def wait_for_session(win, caller, app, instance_id, proc, timeout=300):
     raise AssertionError("no %s session within %d s" % (app, timeout))
 
 
-def quit_app(win, caller, app, proc, timeout=120, close_documents=True):
+def quit_app(win, caller, app, proc, timeout=120, close_documents=True, via_plugin=False):
     if close_documents:
         try:
             caller.command("run", {"code": CLOSE_DOCUMENTS[app]}, timeout=30)
+        except Exception:
+            pass
+    if via_plugin:
+        # The app quits while the command runs, so it never answers.
+        try:
+            caller.command("run", {"code": "app.quit()"}, timeout=15)
         except Exception:
             pass
     end = time.time() + timeout
@@ -543,6 +558,7 @@ def quit_app(win, caller, app, proc, timeout=120, close_documents=True):
 
 def run_app(app, win, caller, checks, opts, api_url, token):
     proc = APPS[app]
+    quits_via_plugin = isinstance(win, Mac) and app == "premiere"
     work = os.path.join(opts.workdir, app)
     shutil.rmtree(work, ignore_errors=True)  # a fresh folder: the plugin never overwrites files
     os.makedirs(work, exist_ok=True)
@@ -603,14 +619,18 @@ def run_app(app, win, caller, checks, opts, api_url, token):
                      lambda: _export_project(caller, win, proc["ext"]))
         checks.check(app, "open a saved file", lambda: _open(caller, win, app, work))
         close = CLOSE_DOCUMENTS[app]
-        if isinstance(win, Mac) and app == "premiere":
+        if quits_via_plugin:
             # Nothing answers Premiere's "save changes?" when it quits here (see
             # the top), so its project is closed without asking.
             close = "app.project.closeDocument(0, 0); true"
         checks.check(app, "close documents without saving", lambda: caller.ok("run", {"code": close}))
-        checks.check(app, "ask before running code: nobody there", lambda: _ask(caller, app))
+        if quits_via_plugin:
+            checks.skip(app, "ask before running code: nobody there",
+                        "Premiere quits through the plugin on macOS (see the top); checked in the other apps")
+        else:
+            checks.check(app, "ask before running code: nobody there", lambda: _ask(caller, app))
     finally:
-        closed = quit_app(win, caller, app, proc, close_documents=False)
+        closed = quit_app(win, caller, app, proc, close_documents=False, via_plugin=quits_via_plugin)
         checks.check(app, "quits cleanly", lambda: _assert(closed, "%s did not quit" % app))
         reset_settings(win, app)
         try:
@@ -895,9 +915,11 @@ def main():
 
 
 def finish(checks, started, opts):
-    passed = sum(1 for r in checks.results if r[2])
-    failed = [r for r in checks.results if not r[2]]
-    print("\n%d passed, %d failed in %.0f s" % (passed, len(failed), time.time() - started), flush=True)
+    passed = sum(1 for r in checks.results if r[2] is True)
+    failed = [r for r in checks.results if r[2] is False]
+    skipped = sum(1 for r in checks.results if r[2] is None)
+    print("\n%d passed, %d failed, %d skipped in %.0f s" % (passed, len(failed), skipped, time.time() - started),
+          flush=True)
     if opts.report:
         with open(opts.report, "w", encoding="utf-8") as handle:
             json.dump([{"app": a, "check": n, "ok": ok, "error": e} for a, n, ok, e in checks.results], handle,
