@@ -9,7 +9,7 @@
 
 "use strict";
 
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "0.1.1";
 const DEFAULT_API_URL = "https://api.nolgia.ai/v1";
 const DEVICE_CLIENT_ID = "nolgia-adobe";
 const DEVICE_SCOPE = "bridge assets:read assets:write";
