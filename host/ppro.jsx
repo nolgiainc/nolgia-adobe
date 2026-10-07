@@ -299,9 +299,13 @@
 
   function presetPath() {
     var base = String(app.path).replace(/\\/g, "/").replace(/\/?$/, "/");
-    for (var i = 0; i < H264_PRESETS.length; i++) {
-      var f = new File(base + H264_PRESETS[i]);
-      if (f.exists) return f.fsName;
+    // On macOS app.path is the .app bundle; the presets are inside Contents.
+    var bases = [base, base + "Contents/"];
+    for (var b = 0; b < bases.length; b++) {
+      for (var i = 0; i < H264_PRESETS.length; i++) {
+        var f = new File(bases[b] + H264_PRESETS[i]);
+        if (f.exists) return f.fsName;
+      }
     }
     N.fail("Could not find Premiere Pro's H.264 export preset under " + base + "MediaIO/systempresets.");
   }
