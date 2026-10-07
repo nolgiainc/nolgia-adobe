@@ -103,11 +103,12 @@ test("starts connected from NOLGIA_TOKEN and answers info", async () => {
   const cmd = await command("info");
   assert.equal(cmd.status, "succeeded");
   assert.deepEqual(cmd.result, { app: "after_effects", app_version: "25.6x101", comps: [] });
+  // The activity says Done once NOLGIA has answered the result, a moment after it stored it.
+  await support.until(() => ctl.state().activity[0].label === "Done", 10, "activity done");
   const st = ctl.state();
   assert.equal(st.signed_in, true);
   assert.equal(st.env_token, true);
   assert.equal(st.activity[0].kind, "info");
-  assert.equal(st.activity[0].label, "Done");
   await finish(ctl);
   // The environment's token is never saved.
   assert.equal(ctl.settings.get("token"), "");

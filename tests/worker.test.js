@@ -19,6 +19,15 @@ test.before(async () => {
 });
 test.after(() => server.stop());
 test.beforeEach(() => support.reset(server));
+// A test that fails before it stops its worker must not leave it running:
+// it would take the next test's commands and keep the run from ending.
+const workers = [];
+test.afterEach(async () => {
+  for (const worker of workers.splice(0)) {
+    worker.kill();
+    await worker.finished.wait(10);
+  }
+});
 
 function makeWorker({ execute, token = support.TOKEN, snapshot = null, heartbeatInterval = 20 } = {}) {
   const statuses = [];
@@ -39,6 +48,7 @@ function makeWorker({ execute, token = support.TOKEN, snapshot = null, heartbeat
   });
   worker.statuses = statuses;
   worker.authFailures = authFailures;
+  workers.push(worker);
   return worker;
 }
 
@@ -65,7 +75,9 @@ test("registers with the full state and runs commands", async () => {
   const done = await support.waitCommand(server, id);
   assert.equal(done.status, "succeeded");
   assert.deepEqual(done.result, { kind: "info" });
-  assert.equal(worker.activity.list()[0].status, "succeeded");
+  // The worker marks it done once NOLGIA has answered the result, a moment
+  // after NOLGIA stored it.
+  await support.until(() => worker.activity.list()[0].status === "succeeded", 10, "activity succeeded");
   await stopped(worker);
   const after = await support.state(server);
   assert.equal(after.deleted_sessions.length, 1);
@@ -115,6 +127,7 @@ test("registers again when NOLGIA forgets the session", async () => {
       snapshot: () => ({ document: { name: "" }, app_version: "25.6" }),
       app: APP,
     }).start();
+    workers.push(worker);
     await support.until(() => worker.state === Status.CONNECTED, 10);
     const sid = worker.sessionId;
     await support.call(quick, "DELETE", "/v1/bridge/sessions/" + sid);
