@@ -18,13 +18,15 @@ For each app (After Effects, Premiere Pro, Illustrator):
    POST /bridge/commands as the MCP server would, checking each result.
 4. Closes the app's documents without saving and quits it.
 
-Usage (from WSL, or on Windows with a Windows Python):
+Usage (from WSL, on Windows with a Windows Python, or on macOS):
     python3 adobe/tests/e2e_adobe.py --zxpsigncmd /path/ZXPSignCmd.exe
     python3 adobe/tests/e2e_adobe.py --api prod --token-file ~/.config/nolgia/tokens.json
     python3 adobe/tests/e2e_adobe.py --apps illustrator --workdir "/mnt/c/Users/me/Documents/NOLGIA e2e"
 
-Only Windows hosts are wired up here (the app paths and the dialog helper
-are Windows ones). The work folder must be one the apps can reach.
+The work folder must be one the apps can reach. On macOS the app dialogs are
+read and dismissed through System Events, which needs Accessibility access
+for the terminal (System Settings > Privacy & Security > Accessibility);
+without it the test runs on, but a dialog the app shows stays up.
 """
 
 import argparse
@@ -54,6 +56,8 @@ TOKEN = "e2e-token"
 VERSION = json.load(open(os.path.join(ADOBE, "package.json")))["version"]
 CAPABILITIES = ["info", "run", "preview", "import_asset", "export", "save", "open"]
 UPIA = r"C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe"
+UPIA_MAC = ("/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/"
+            "UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent")
 APPS = {
     "after_effects": {
         "exe": r"C:\Program Files\Adobe\Adobe After Effects 2025\Support Files\AfterFX.exe",
@@ -61,6 +65,8 @@ APPS = {
         "title": "Adobe After Effects",
         "main_class": "AE_CApplication",
         "ext": "aep",
+        "app": "/Applications/Adobe After Effects 2026/Adobe After Effects 2026.app",
+        "mac_process": "After Effects",
     },
     "premiere": {
         "exe": r"C:\Program Files\Adobe\Adobe Premiere Pro 2026\Adobe Premiere Pro.exe",
@@ -68,6 +74,8 @@ APPS = {
         "title": "Adobe Premiere",
         "main_class": "Premiere Pro",
         "ext": "prproj",
+        "app": "/Applications/Adobe Premiere Pro 2026/Adobe Premiere Pro 2026.app",
+        "mac_process": "Adobe Premiere Pro 2026",
     },
     "illustrator": {
         "exe": r"C:\Program Files\Adobe\Adobe Illustrator 2026\Support Files\Contents\Windows\Illustrator.exe",
@@ -75,6 +83,8 @@ APPS = {
         "title": "Adobe Illustrator",
         "main_class": "illustrator",
         "ext": "ai",
+        "app": "/Applications/Adobe Illustrator 2026/Adobe Illustrator.app",
+        "mac_process": "Adobe Illustrator",
     },
 }
 
@@ -126,6 +136,8 @@ foreach ($h in [NW]::Top()) {
 
 class Windows:
     """Runs Windows programs, from WSL or from Windows itself."""
+
+    DIALOG = "#32770"
 
     def __init__(self):
         self.wsl = os.path.exists("/proc/version") and "microsoft" in open("/proc/version").read().lower()
@@ -181,12 +193,117 @@ class Windows:
     def close(self, process, hwnd):
         self.powershell(["-action", "close", "-proc", process, "-hwnd", str(hwnd)])
 
-    def running(self, image):
+    def running(self, proc):
         # The full list: a /FI filter's quotes do not survive the trip from WSL.
         exe = "/mnt/c/Windows/System32/tasklist.exe" if self.wsl else "tasklist.exe"
         out = subprocess.run([exe, "/NH", "/FO", "CSV"], stdout=subprocess.PIPE, text=True,
                              errors="replace").stdout
-        return ('"%s"' % image.lower()) in out.lower()
+        return ('"%s"' % ntpath.basename(proc["exe"]).lower()) in out.lower()
+
+    def start(self, proc):
+        exe = self.exe(proc["exe"])
+        subprocess.Popen([exe], cwd=os.path.dirname(exe), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def quit(self, proc):
+        for w in self.windows(proc["process"]):
+            if w["cls"].startswith(proc["main_class"]) or proc["title"] in w["title"]:
+                # The main window's title is the document's name while one is open.
+                self.close(proc["process"], w["hwnd"])
+
+    def upia(self, action, arg):
+        return subprocess.run([self.exe(UPIA), "/" + action, arg], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, errors="replace").stdout
+
+    def user_data(self):
+        return self.from_win(self.env_var("APPDATA"))
+
+    def documents(self):
+        return self.from_win(self.env_var("USERPROFILE")) + "/Documents"
+
+
+# Lists the dialogs of a process (index, subrole, title, texts), or presses
+# Enter on one. Needs Accessibility access for the program running it.
+MAC_DIALOGS_JXA = r"""
+function run(argv) {
+  var se = Application("System Events"), out = [];
+  var proc = se.processes.byName(argv[1]), wins = proc.windows();
+  for (var i = 0; i < wins.length; i++) {
+    var w = wins[i], sub = "";
+    try { sub = w.subrole(); } catch (e) {}
+    if (sub !== "AXDialog" && sub !== "AXSystemDialog") continue;
+    if (argv[0] === "enter") {
+      if (String(i) !== argv[2]) continue;
+      proc.frontmost = true; delay(0.3); se.keyCode(36); continue;
+    }
+    var texts = [];
+    try { texts = w.staticTexts.value(); } catch (e) {}
+    out.push([i, sub, w.name() || "", texts.join(" | ")].join("\t"));
+  }
+  return out.join("\n");
+}
+"""
+
+
+class Mac:
+    """Runs the macOS apps. Paths are the same on both sides."""
+
+    DIALOG = "AXDialog"
+
+    def __init__(self):
+        self.warned = False
+
+    def to_win(self, path):
+        return path
+
+    def from_win(self, path):
+        return path
+
+    def _dialogs(self, args):
+        # The callers name the Windows process; System Events knows the macOS one.
+        args[1] = next((p["mac_process"] for p in APPS.values() if p["process"] == args[1]), args[1])
+        out = subprocess.run(["osascript", "-l", "JavaScript", "-e", MAC_DIALOGS_JXA] + args,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+        if out.returncode and not self.warned:
+            self.warned = True
+            print("     cannot read app dialogs (System Events): %s" % out.stderr.strip()[-200:], flush=True)
+        return out.stdout if out.returncode == 0 else ""
+
+    def windows(self, process):
+        rows = []
+        for line in self._dialogs(["list", process]).splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 3:
+                rows.append({"hwnd": int(parts[0]), "cls": "AXDialog", "title": parts[2],
+                             "text": parts[3] if len(parts) > 3 else ""})
+        return rows
+
+    def press_enter(self, process, hwnd):
+        self._dialogs(["enter", process, str(hwnd)])
+
+    def running(self, proc):
+        return subprocess.run(["pgrep", "-x", proc["mac_process"]], stdout=subprocess.DEVNULL).returncode == 0
+
+    def start(self, proc):
+        subprocess.run(["open", "-a", proc["app"]], check=True)
+
+    def quit(self, proc):
+        name = os.path.splitext(os.path.basename(proc["app"]))[0]
+        try:
+            # Blocks while the app asks something (a dialog), so a short wait.
+            subprocess.run(["osascript", "-e", 'tell application "%s" to quit' % name], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=15)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def upia(self, action, arg):
+        return subprocess.run([UPIA_MAC, "--" + action, arg], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, errors="replace").stdout
+
+    def user_data(self):
+        return os.path.expanduser("~/Library/Application Support")
+
+    def documents(self):
+        return os.path.expanduser("~/Documents")
 
 
 # ---------------------------------------------------------------- fixtures
@@ -377,17 +494,14 @@ def build_and_install(win, opts):
         zxp = os.path.join(ADOBE, "dist", "nolgia-adobe-%s.zxp" % VERSION)
     staged = os.path.join(opts.workdir, os.path.basename(zxp))
     shutil.copyfile(zxp, staged)
-    upia = win.exe(UPIA)
-    subprocess.run([upia, "/remove", "NOLGIA"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    out = subprocess.run([upia, "/install", win.to_win(staged)], stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, text=True, errors="replace")
-    assert "Installation Successful" in out.stdout, out.stdout[-1500:]
+    win.upia("remove", "NOLGIA")
+    out = win.upia("install", win.to_win(staged))
+    assert "Installation Successful" in out, out[-1500:]
     return staged
 
 
 def env_file(win):
-    appdata = win.from_win(win.env_var("APPDATA"))
-    return os.path.join(appdata, "NOLGIA", "adobe", "env.json")
+    return os.path.join(win.user_data(), "NOLGIA", "adobe", "env.json")
 
 
 def wait_for_session(win, caller, app, instance_id, proc, timeout=300):
@@ -396,7 +510,7 @@ def wait_for_session(win, caller, app, instance_id, proc, timeout=300):
     seen = set()
     while time.time() < end:
         for w in win.windows(proc["process"]):
-            if w["cls"] == "#32770":
+            if w["cls"] == win.DIALOG:
                 if w["hwnd"] not in seen:
                     print("     dialog in %s: %s %s" % (app, w["title"], w["text"][:200]), flush=True)
                     seen.add(w["hwnd"])
@@ -414,17 +528,14 @@ def quit_app(win, caller, app, proc, timeout=120, close_documents=True):
             caller.command("run", {"code": CLOSE_DOCUMENTS[app]}, timeout=30)
         except Exception:
             pass
-    image = ntpath.basename(proc["exe"])
     end = time.time() + timeout
-    while time.time() < end and win.running(image):
+    while time.time() < end and win.running(proc):
         for w in win.windows(proc["process"]):
-            if w["cls"] == "#32770":
+            if w["cls"] == win.DIALOG:
                 win.press_enter(proc["process"], w["hwnd"])
-            elif w["cls"].startswith(proc["main_class"]) or proc["title"] in w["title"]:
-                # The main window's title is the document's name while one is open.
-                win.close(proc["process"], w["hwnd"])
+        win.quit(proc)
         time.sleep(4)
-    return not win.running(image)
+    return not win.running(proc)
 
 
 # -------------------------------------------------------------- the checks
@@ -445,8 +556,7 @@ def run_app(app, win, caller, checks, opts, api_url, token):
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(env, handle)
     caller.app = app
-    exe = win.exe(proc["exe"])
-    subprocess.Popen([exe], cwd=os.path.dirname(exe), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    win.start(proc)
     session = {}
 
     def connects():
@@ -492,7 +602,12 @@ def run_app(app, win, caller, checks, opts, api_url, token):
         checks.check(app, "export %s copies the project" % proc["ext"],
                      lambda: _export_project(caller, win, proc["ext"]))
         checks.check(app, "open a saved file", lambda: _open(caller, win, app, work))
-        checks.check(app, "close documents without saving", lambda: caller.ok("run", {"code": CLOSE_DOCUMENTS[app]}))
+        close = CLOSE_DOCUMENTS[app]
+        if isinstance(win, Mac) and app == "premiere":
+            # Nothing answers Premiere's "save changes?" when it quits here (see
+            # the top), so its project is closed without asking.
+            close = "app.project.closeDocument(0, 0); true"
+        checks.check(app, "close documents without saving", lambda: caller.ok("run", {"code": close}))
         checks.check(app, "ask before running code: nobody there", lambda: _ask(caller, app))
     finally:
         closed = quit_app(win, caller, app, proc, close_documents=False)
@@ -718,8 +833,7 @@ def _ask(caller, app):
 
 def reset_settings(win, app):
     """Put Ask before running code back to off in the app's own settings."""
-    appdata = win.from_win(win.env_var("APPDATA"))
-    path = os.path.join(appdata, "NOLGIA", "adobe", app, "settings.json")
+    path = os.path.join(win.user_data(), "NOLGIA", "adobe", app, "settings.json")
     try:
         with open(path, encoding="utf-8") as handle:
             data = json.load(handle)
@@ -745,9 +859,9 @@ def main():
     parser.add_argument("--report", default=None, help="write the results as JSON here")
     opts = parser.parse_args()
 
-    win = Windows()
+    win = Mac() if sys.platform == "darwin" else Windows()
     if not opts.workdir:
-        docs = win.from_win(win.env_var("USERPROFILE")) + "/Documents"
+        docs = win.documents()
         opts.workdir = os.path.join(docs, "NOLGIA e2e")
     opts.workdir = os.path.abspath(opts.workdir)
     os.makedirs(opts.workdir, exist_ok=True)
