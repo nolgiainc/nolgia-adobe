@@ -31,6 +31,7 @@ const { leaseInstanceId } = require("./instance");
 const { Settings, loadEnv, envFlag, appDir } = require("./settings");
 const { BridgeWorker, Status } = require("./worker");
 const util = require("./util");
+const dit = require("./dit");
 
 // Camera log variants of NOLGIA's color presets: "<slug>-<suffix>" is the same
 // look for footage in that log encoding (nolgia-api render/colorgrade).
@@ -568,6 +569,38 @@ class Controller {
     }
     if (outcome.decision === "closed") throw new CommandError(outcome.reason);
     throw new CommandError("Nobody approved this in " + this.app.name + " in time, so it did not run.");
+  }
+
+  // ---- dit
+
+  // Camera-card DIT through the NOLGIA CLI on this computer. Writes to media
+  // (offload, rename --apply, undo) always wait for the person's Approve,
+  // whoever sent them and whatever "Ask before running code" says.
+  async do_dit(command) {
+    const a = command.args;
+    if (!this.ditJobs) this.ditJobs = new dit.Jobs();
+    try {
+      if (a.action === "status") return this.ditJobs.status(a.job_id);
+      if (a.action === "cancel") return this.ditJobs.cancel(a.job_id);
+    } catch (e) {
+      if (e instanceof dit.DitError) throw new CommandError(e.message);
+      throw e;
+    }
+    const cli = dit.locateCli();
+    if (!cli) throw new CommandError(dit.INSTALL_HINT);
+    if (dit.writesMedia(a)) {
+      const plan = await dit.planFor(cli, a);
+      if (plan.refused) throw new CommandError(plan.refused, plan.result || null);
+      if (plan.nothing) return { running: false, exit_code: 0, meaning: "nothing to rename", result: plan.nothing };
+      await this.askPerson(command, {
+        title: command.requester + " wants to " + plan.title + " on this computer",
+        lines: plan.lines,
+        approveLabel: plan.approve,
+      });
+    }
+    const job = this.ditJobs.start(cli, dit.argv(a));
+    // Short work comes back finished; long work comes back as a job to follow.
+    return this.ditJobs.waitOrReturn(job, Math.min(Math.max(1, command.remaining() - 5), 100));
   }
 
   // ---- info

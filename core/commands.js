@@ -11,7 +11,7 @@ const { parseTime, cutText } = require("./util");
 
 // Every kind this plugin implements, in the order the spec lists them. The
 // plugin advertises exactly these in `capabilities`.
-const CAPABILITIES = ["info", "run", "preview", "import_asset", "export", "save", "open"];
+const CAPABILITIES = ["info", "run", "preview", "import_asset", "export", "save", "open", "dit"];
 
 const DEFAULT_TIMEOUT = 120;
 // The API takes at most 1 MB (2**20 bytes) of result JSON, measured after it
@@ -223,6 +223,15 @@ function validate(app, kind, args) {
     out.path = strArg(args, "path");
   } else if (kind === "open") {
     out.path = strArg(args, "path", { required: true });
+  } else if (kind === "dit") {
+    // Required here so the app-side kinds above load without it.
+    const dit = require("./dit");
+    try {
+      return dit.validateArgs(args);
+    } catch (e) {
+      if (e instanceof dit.DitError) throw new CommandError(e.message);
+      throw e;
+    }
   }
   return out;
 }
