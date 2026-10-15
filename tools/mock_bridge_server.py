@@ -1045,11 +1045,20 @@ def list_color_presets(h):
     return h._send(200, {"version": 1, "presets": presets}, headers={"Cache-Control": "public, max-age=86400"})
 
 
+# Camera log variants, like the API's "<slug>-<suffix>" (kodak-portra-400-slog3).
+COLOR_PRESET_LOG_SUFFIXES = {"slog3": "S-Log3", "logc3": "LogC3", "vlog": "V-Log", "bmdfilm5": "Blackmagic Film Gen 5"}
+
+
 @route("GET", r"/v1/color-presets/([^/]+)/cube")
 def get_color_preset_cube(h, slug):
+    base, log = slug, None
+    for suffix, log_name in COLOR_PRESET_LOG_SUFFIXES.items():
+        if slug.endswith("-" + suffix):
+            base, log = slug[: -len(suffix) - 1], log_name
     for known, name, _, tint in COLOR_PRESETS:
-        if known == slug:
-            return h._send(200, raw=color_preset_cube(name, tint), content_type="text/plain; charset=utf-8",
+        if known == base:
+            title = name + (" (%s)" % log if log else "")
+            return h._send(200, raw=color_preset_cube(title, tint), content_type="text/plain; charset=utf-8",
                            headers={"Cache-Control": "public, max-age=86400"})
     raise HttpError(404, "Not Found", "color preset not found")
 

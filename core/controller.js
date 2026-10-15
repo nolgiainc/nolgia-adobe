@@ -32,6 +32,22 @@ const { Settings, loadEnv, envFlag, appDir } = require("./settings");
 const { BridgeWorker, Status } = require("./worker");
 const util = require("./util");
 
+// Camera log variants of NOLGIA's color presets: "<slug>-<suffix>" is the same
+// look for footage in that log encoding (nolgia-api render/colorgrade).
+const LOG_SUFFIXES = [
+  { suffix: "slog3", name: "S-Log3" },
+  { suffix: "logc3", name: "LogC3" },
+  { suffix: "vlog", name: "V-Log" },
+  { suffix: "bmdfilm5", name: "Blackmagic Film Gen 5" },
+];
+
+// A LUT's file name as the Lumetri menus show it: letters, digits and a few
+// marks kept, anything else a space.
+function lutFileName(text, fallback) {
+  const clean = String(text || "").replace(/[^A-Za-z0-9 ._()&+'-]+/g, " ").replace(/\s+/g, " ").trim().replace(/^[ .]+|[ .]+$/g, "");
+  return clean.slice(0, 100) || fallback;
+}
+
 // The MCP preview tool shows a still inline only up to 3,750,000 bytes.
 const PREVIEW_MAX_BYTES = 3600000;
 const PREVIEW_JPEG_QUALITIES = [0.9, 0.8, 0.65, 0.5];
@@ -230,6 +246,7 @@ class Controller {
       snapshot: () => this.snapshot,
       app: this.app,
       onStatus: () => this.bump(),
+      onActivity: () => this.bump(),
       onAuthFailed: (text) => this.authFailed(text),
       log: (text) => this.log(text),
     }).start();
@@ -685,6 +702,7 @@ class Controller {
   }
 
   async do_import_asset(command, api) {
+    if (command.args.color_preset) return this.installColorPreset(command, api);
     const assetId = command.args.asset_id;
     let asset;
     try {
@@ -737,6 +755,92 @@ class Controller {
     } finally {
       fs.rmSync(temp, { force: true });
     }
+  }
+
+  // ---- color presets
+
+  // The shared Adobe LUT folder Lumetri Color reads at start: Creative for
+  // the Look menu, Technical for Basic Correction's Input LUT. Per user, so
+  // no administrator rights are needed.
+  lutRoot() {
+    if (this.env.NOLGIA_LUT_DIR) return this.env.NOLGIA_LUT_DIR;
+    if (process.platform === "win32") {
+      const roaming = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+      return path.join(roaming, "Adobe", "Common", "LUTs");
+    }
+    return path.join(os.homedir(), "Library", "Application Support", "Adobe", "Common", "LUTs");
+  }
+
+  // Install one of NOLGIA's film stocks (GET /color-presets/{slug}/cube) as
+  // a .cube LUT. A camera log variant (kodak-portra-400-slog3) converts the
+  // log picture to Rec.709 before the look, so it goes in Technical and is
+  // set as the Input LUT; a plain look goes in Creative, under Look.
+  async installColorPreset(command, api) {
+    const slug = command.args.color_preset;
+    let res;
+    try {
+      res = await api.request("GET", "/color-presets/" + encodeURIComponent(slug) + "/cube", undefined, { timeout: 60 });
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        throw new CommandError(
+          "NOLGIA has no color preset named " + slug + ". The list is at " + api.baseUrl + "/color-presets; " +
+            "for camera log footage add the camera's suffix: " + LOG_SUFFIXES.map((l) => "-" + l.suffix).join(", ") + "."
+        );
+      }
+      if (err instanceof NetworkError) throw new CommandError("Could not reach NOLGIA for the color preset (" + err.message + ").");
+      throw err;
+    }
+    const data = res.body || Buffer.alloc(0);
+    if (!/^\s*LUT_3D_SIZE\s+\d+/m.test(data.slice(0, 4096).toString("utf8"))) {
+      throw new CommandError("NOLGIA's answer for the color preset " + slug + " is not a .cube LUT.");
+    }
+    const log = LOG_SUFFIXES.find((l) => slug.endsWith("-" + l.suffix)) || null;
+    const base = log ? slug.slice(0, -(log.suffix.length + 1)) : slug;
+    let name = null;
+    try {
+      const listing = (await api.request("GET", "/color-presets", undefined, { timeout: 30 })).json() || {};
+      const found = (listing.presets || []).find((p) => p && p.slug === base);
+      if (found && found.name) name = String(found.name);
+    } catch (err) {
+      // the name is a nicety: fall back to the cube's own title
+    }
+    if (!name) {
+      const m = /^\s*TITLE\s+"([^"]*)"/m.exec(data.slice(0, 4096).toString("utf8"));
+      name = m ? m[1].replace(/^Nolgia\s+/i, "") : base;
+    }
+    const lut = lutFileName("NOLGIA " + name + (log ? " (" + log.name + ")" : ""), "NOLGIA " + slug);
+    const folder = path.join(this.lutRoot(), log ? "Technical" : "Creative");
+    fs.mkdirSync(folder, { recursive: true });
+    const target = path.join(folder, lut + ".cube");
+    // Write next to it, then rename, so the app never reads half a LUT. The
+    // preset replaces its own older copy.
+    const temp = target + ".part-" + process.pid;
+    try {
+      fs.writeFileSync(temp, data);
+      fs.renameSync(temp, target);
+    } finally {
+      fs.rmSync(temp, { force: true });
+    }
+    const where = log ? "Lumetri Color > Basic Correction > Input LUT" : "Lumetri Color > Creative > Look";
+    const result = {
+      imported: [lut],
+      kind: "lut",
+      color_preset: slug,
+      lut,
+      path: target,
+      menu: where,
+      relaunch_needed: true,
+      note:
+        this.app.name + " reads its LUT folders when it starts: save, quit and reopen it, then pick " + lut +
+        " in " + where + (log ? " (it converts " + log.name + " footage to Rec.709 and applies the look in one step)." : "."),
+    };
+    if (command.args.apply_to) {
+      result.applied_to = [];
+      result.apply_note =
+        this.app.name + "'s scripting cannot set a LUT on clips, so the LUT is installed but not applied. " +
+        "After the relaunch it is one click in " + where + ".";
+    }
+    return result;
   }
 
   // ---- export
