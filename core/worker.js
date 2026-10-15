@@ -56,6 +56,7 @@ class BridgeWorker {
     snapshot,
     app,
     onStatus = null,
+    onActivity = null,
     onAuthFailed = null,
     log = null,
     heartbeatInterval = 20,
@@ -68,6 +69,11 @@ class BridgeWorker {
     this.snapshot = snapshot;
     this.app = app; // an entry of index.APPS
     this.onStatus = onStatus || (() => {});
+    // Called when a command's activity entry changes on this side: its result
+    // reached NOLGIA (or could not) and the worker is free again. The panel
+    // repaints from it; without it the last command stayed "Running" until
+    // the next one arrived.
+    this.onActivity = onActivity || (() => {});
     this.onAuthFailed = onAuthFailed || (() => {});
     this.log = log || (() => {});
     this.heartbeatInterval = heartbeatInterval;
@@ -322,7 +328,16 @@ class BridgeWorker {
       await this.post(command, outcome.ok, outcome.result, outcome.error);
     } finally {
       this.inFlight = null;
+      this.activityChanged();
       await this.closeIfIdle();
+    }
+  }
+
+  activityChanged() {
+    try {
+      this.onActivity();
+    } catch (e) {
+      // the panel's problem, not ours
     }
   }
 

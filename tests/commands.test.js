@@ -57,6 +57,21 @@ test("import_asset checks `as` per app", () => {
   assert.throws(() => c.validate(AE, "import_asset", {}), /`asset_id` is required/);
 });
 
+test("import_asset takes a color preset in Premiere Pro and After Effects", () => {
+  assert.deepEqual(c.validate(PR, "import_asset", { color_preset: "kodak-portra-400-slog3" }), {
+    asset_id: null,
+    color_preset: "kodak-portra-400-slog3",
+    apply_to: null,
+    as: null,
+  });
+  assert.equal(c.validate(AE, "import_asset", { color_preset: "cinestill-800t", apply_to: "all" }).apply_to, "all");
+  assert.throws(() => c.validate(AI, "import_asset", { color_preset: "kodak-portra-400" }), /works in Premiere Pro and After Effects/);
+  assert.throws(() => c.validate(PR, "import_asset", { color_preset: "kodak-portra-400", asset_id: "a" }), /not both/);
+  assert.throws(() => c.validate(PR, "import_asset", { color_preset: "Kodak Portra" }), /slug such as kodak-portra-400/);
+  assert.throws(() => c.validate(PR, "import_asset", { color_preset: "x", apply_to: "everything" }), /must be one of: current/);
+  assert.throws(() => c.validate(PR, "import_asset", {}), /or `color_preset`/);
+});
+
 test("export formats per app, and frames", () => {
   assert.deepEqual(c.validate(AE, "export", { format: "MP4", frames: "0-47" }), {
     format: "mp4",

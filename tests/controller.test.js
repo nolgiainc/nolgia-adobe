@@ -114,6 +114,30 @@ test("starts connected from NOLGIA_TOKEN and answers info", async () => {
   assert.equal(ctl.settings.get("token"), "");
 });
 
+test("the panel is told when a command finishes, not only when the next one starts", async () => {
+  const host = fakeHost({ save: () => ({ path: "C:\\shots\\shot.aep" }) });
+  const ctl = await connected(controllerFor(host, { NOLGIA_ASK_BEFORE_RUN: "0" }));
+  // A real network takes longer to accept the result than the panel's 50 ms
+  // repaint delay; slow the mock down the same way.
+  const api = ctl.worker.api;
+  const postResult = api.postResult.bind(api);
+  api.postResult = async (...a) => {
+    await new Promise((r) => setTimeout(r, 400));
+    return postResult(...a);
+  };
+  try {
+    const cmd = await command("save", {});
+    assert.equal(cmd.status, "succeeded");
+    // What the panel last received, not what ctl.state() would say if asked:
+    // it must show Done and drop "Working on save..." without another command.
+    const last = () => host.states[host.states.length - 1];
+    await support.until(() => last() && last().activity[0] && last().activity[0].label === "Done", 10, "broadcast done");
+    assert.ok(!/Working on/.test(last().status), last().status);
+  } finally {
+    await finish(ctl);
+  }
+});
+
 test("run returns value and output, and code errors come back with them", async () => {
   const host = fakeHost({
     run: (args) => {
@@ -210,6 +234,44 @@ test("import_asset downloads next to the project and converts WebP to PNG", asyn
   const importCall = host.calls.find(([k]) => k === "import");
   assert.equal(importCall[1].as, "layer");
   await finish(ctl);
+});
+
+test("import_asset installs a color preset where Lumetri finds it: looks in Creative, log variants in Technical", async () => {
+  const host = fakeHost();
+  const luts = path.join(host.root, "LUTs");
+  const ctl = await connected(controllerFor(host, { NOLGIA_LUT_DIR: luts }));
+  try {
+    const look = await command("import_asset", { color_preset: "kodak-portra-400" });
+    assert.equal(look.status, "succeeded", look.error);
+    assert.equal(look.result.kind, "lut");
+    assert.equal(look.result.lut, "NOLGIA Kodak Portra 400");
+    assert.equal(look.result.path, path.join(luts, "Creative", "NOLGIA Kodak Portra 400.cube"));
+    assert.equal(look.result.menu, "Lumetri Color > Creative > Look");
+    assert.equal(look.result.relaunch_needed, true);
+    assert.match(fs.readFileSync(look.result.path, "utf8"), /^TITLE "Nolgia Kodak Portra 400"\nLUT_3D_SIZE 5/);
+
+    const log = await command("import_asset", { color_preset: "kodak-portra-400-slog3", apply_to: "all" });
+    assert.equal(log.status, "succeeded", log.error);
+    assert.equal(log.result.path, path.join(luts, "Technical", "NOLGIA Kodak Portra 400 (S-Log3).cube"));
+    assert.equal(log.result.menu, "Lumetri Color > Basic Correction > Input LUT");
+    assert.match(log.result.note, /converts S-Log3 footage to Rec.709/);
+    // Not applied: Premiere's scripting cannot set a LUT on clips, and it says so.
+    assert.deepEqual(log.result.applied_to, []);
+    assert.match(log.result.apply_note, /installed but not applied/);
+
+    // Again: the preset replaces its own copy, no second file.
+    const again = await command("import_asset", { color_preset: "kodak-portra-400" });
+    assert.equal(again.status, "succeeded");
+    assert.deepEqual(fs.readdirSync(path.join(luts, "Creative")), ["NOLGIA Kodak Portra 400.cube"]);
+
+    const missing = await command("import_asset", { color_preset: "no-such-stock" });
+    assert.equal(missing.status, "failed");
+    assert.match(missing.error, /no color preset named no-such-stock.*-slog3/s);
+    // Nothing was handed to the app: installing a LUT is a file in a folder.
+    assert.equal(host.calls.filter(([k]) => k === "import").length, 0);
+  } finally {
+    await finish(ctl);
+  }
 });
 
 test("export renders, uploads and cleans up; project files stay local", async () => {

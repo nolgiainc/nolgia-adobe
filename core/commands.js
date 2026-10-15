@@ -26,6 +26,11 @@ const RESULT_MARGIN = 3;
 // is accepted everywhere too, because the MCP preview tool sends that name.
 const VIEW_ARG = { after_effects: "comp", premiere: "sequence", illustrator: "artboard" };
 const IMPORT_AS = { after_effects: ["footage", "layer"], premiere: ["clip"], illustrator: ["embed", "link"] };
+// Apps whose Lumetri Color reads the shared Adobe LUT folders, so
+// import_asset can install a NOLGIA color preset as a .cube there.
+const LUT_APPS = ["premiere", "after_effects"];
+const PRESET_SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const APPLY_TO = ["current", "selected", "current_track", "all"];
 
 // A command failed. The message is shown to the agent and the person.
 class CommandError extends Error {
@@ -188,7 +193,23 @@ function validate(app, kind, args) {
     out.frame = intArg(args, "frame");
     out.width = intArg(args, "width", { low: 16, high: 1920 });
   } else if (kind === "import_asset") {
-    out.asset_id = strArg(args, "asset_id", { required: true });
+    out.asset_id = strArg(args, "asset_id");
+    const preset = strArg(args, "color_preset");
+    if (preset !== null) {
+      if (!LUT_APPS.includes(app.app)) {
+        throw new CommandError(
+          app.name + " has no LUT folder to install a color preset into. `color_preset` works in Premiere Pro and After Effects."
+        );
+      }
+      if (out.asset_id !== null) throw new CommandError("Pass `asset_id` or `color_preset`, not both.");
+      if (!PRESET_SLUG.test(preset)) {
+        throw new CommandError("`color_preset` must be a NOLGIA color preset slug such as kodak-portra-400 (GET /color-presets).");
+      }
+      out.color_preset = preset;
+      out.apply_to = strArg(args, "apply_to", { choices: APPLY_TO });
+    } else if (out.asset_id === null) {
+      throw new CommandError("`asset_id` is required, or `color_preset` for one of NOLGIA's film stocks.");
+    }
     out.as = strArg(args, "as", { choices: IMPORT_AS[app.app] });
   } else if (kind === "export") {
     out.format = String(strArg(args, "format", { required: true }) || "").toLowerCase().replace(/^\./, "");
@@ -316,6 +337,8 @@ module.exports = {
   RESULT_MARGIN,
   VIEW_ARG,
   IMPORT_AS,
+  LUT_APPS,
+  APPLY_TO,
   STATUS_LABELS,
   CommandError,
   Command,
