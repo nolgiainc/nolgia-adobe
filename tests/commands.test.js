@@ -11,8 +11,8 @@ const AE = APPS.AEFT;
 const PR = APPS.PPRO;
 const AI = APPS.ILST;
 
-test("every app advertises the seven command kinds", () => {
-  assert.deepEqual(c.CAPABILITIES, ["info", "run", "preview", "import_asset", "export", "save", "open"]);
+test("every app advertises the eight command kinds", () => {
+  assert.deepEqual(c.CAPABILITIES, ["info", "run", "preview", "import_asset", "export", "save", "open", "dit"]);
 });
 
 test("run takes ExtendScript only", () => {
