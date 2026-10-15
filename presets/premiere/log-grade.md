@@ -21,8 +21,8 @@ what changed.
 1. Which sequence (default: the active one) and which clips (default: every
    clip on V1).
 2. The look: neutral and clean (default), warmer, cooler, punchier, or softer.
-3. Whether a NOLGIA film stock should go on top by hand afterwards (see
-   "Film stocks" below).
+3. Whether a NOLGIA film stock should go on top (see "Film stocks" below):
+   which stock, and the camera's log, so you install the right version.
 
 ## Build
 
@@ -55,15 +55,29 @@ what changed.
 
 NOLGIA's film stocks (`nolgia_list_color_presets`) have log versions
 (`<slug>-slog3`, `-logc3`, `-vlog`, `-bmdfilm5`) that convert the log and apply
-the stock in one LUT. Premiere's scripting cannot load a LUT into Lumetri: the
-Input LUT and Look entries take a path or an index from script but nothing
-renders (tested in Premiere Pro 26.2). So offer the stock as a manual step:
-download the `.cube` and have the person choose it in Lumetri > Basic
-Correction > Input LUT > Browse, or put it in the user LUT folder Adobe
-documents for Lumetri (`%APPDATA%\Adobe\Common\LUTs\Technical` on Windows,
-`~/Library/Application Support/Adobe/Common/LUTs/Technical` on a Mac) so it is
-listed there after Premiere restarts. With a stock in the Input LUT, set the
-conversion values above back to 0; converting twice crushes the picture.
+the stock in one LUT.
+
+1. **Install it.** `nolgia_app_import` with `color_preset`, for example
+   `kodak-portra-400-slog3` (plugin 0.1.2 and newer). The plugin puts the
+   `.cube` in the person's own Adobe LUT folder, no administrator rights:
+   `%APPDATA%\Adobe\Common\LUTs` on Windows,
+   `~/Library/Application Support/Adobe/Common/LUTs` on a Mac. A log version
+   goes in `Technical` and a plain look in `Creative`. The result names the LUT
+   and the menu it appears in (`menu`).
+2. **The person picks it once.** Premiere reads its LUT folders only when it
+   starts, and its scripting cannot set a LUT on a clip: the Input LUT and Look
+   entries take a path or an index from script but nothing renders (tested in
+   Premiere Pro 26.2), and `apply_to` reports the LUT as not applied. So ask the
+   person to save, quit and reopen Premiere, then choose the LUT in Lumetri
+   Color > Basic Correction > Input LUT (a log version) or Creative > Look (a
+   plain look) on the first clip. Copying that Lumetri Color to the other clips
+   (Edit > Copy, then Paste Attributes) carries it across.
+3. **Then the values.** With a log version in the Input LUT, set the conversion
+   values above back to 0: converting twice crushes the picture. Keep only
+   small adjustments on top, and take the after stills again.
+
+With an older plugin, `color_preset` is refused: download the `.cube` and have
+the person choose it in Lumetri > Basic Correction > Input LUT > Browse.
 
 ## Check
 
@@ -76,4 +90,4 @@ conversion values above back to 0; converting twice crushes the picture.
 Save the project. Export the after frame as `png` with `nolgia_app_export`
 and, if they want to see it move, an `mp4` of the sequence. Tell the person the
 values used, where to change them (Effect Controls > Lumetri Color > Basic
-Correction), and how to add a film stock by hand.
+Correction), and, when a film stock is installed, which LUT to pick and where.
