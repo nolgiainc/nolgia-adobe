@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { margin: 0; padding: 12px; font-family: sans-serif; font-size: 12px; color: #e8e8e8; background: transparent; }
+      h1 { margin: 0 0 8px; font-size: 13px; font-weight: 600; letter-spacing: 0.06em; }
+      .row { margin: 4px 0; line-height: 1.4; }
+      .dim { color: #a0a0a0; }
+      .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: #8a8a8a; }
+      .dot.on { background: #3fcf8e; }
+    </style>
+  </head>
+  <body>
+    <h1>NOLGIA TRANSCRIPTS</h1>
+    <div class="row"><span id="dot" class="dot"></span><span id="status">Starting...</span></div>
+    <div class="row dim" id="can"></div>
+    <div class="row dim" id="last"></div>
+    <div class="row dim">Reads Premiere's own Speech to Text for NOLGIA for Premiere Pro. Nothing leaves this computer.</div>
+    <script src="helper.js"></script>
+    <script src="main.js"></script>
+  </body>
+</html>

@@ -242,6 +242,20 @@ class ApiClient {
     return (await this.request("GET", "/assets/" + encodeURIComponent(assetId))).json();
   }
 
+  // Transcribe a video or audio asset (1 credit per started minute). The API
+  // answers when it is done, which can take a minute or two; a 409 means a
+  // run is already going, so read it with getTranscription.
+  async transcribeAsset(assetId, language = null) {
+    const body = language ? { language } : {};
+    return (
+      await this.request("POST", "/assets/" + encodeURIComponent(assetId) + "/transcription", body, { timeout: 290 })
+    ).json();
+  }
+
+  async getTranscription(assetId) {
+    return (await this.request("GET", "/assets/" + encodeURIComponent(assetId) + "/transcription")).json();
+  }
+
   // Upload a file as a NOLGIA asset. Resolves the completed asset.
   async uploadFile(filePath, contentType, { displayName = null, tags = null, filename = null } = {}) {
     const size = fs.statSync(filePath).size;

@@ -20,7 +20,7 @@ const os = require("os");
 
 const { PLUGIN_VERSION } = require("./index");
 const { ApiError, NetworkError, Unauthorized } = require("./api");
-const { CAPABILITIES, Command, CommandError, resultBody, monotonic } = require("./commands");
+const { capabilitiesFor, Command, CommandError, resultBody, monotonic } = require("./commands");
 const { Backoff, Signal, timers } = require("./util");
 
 // The API's limits on POST /bridge/sessions fields (characters).
@@ -168,7 +168,7 @@ class BridgeWorker {
       plugin_version: PLUGIN_VERSION,
       machine_name: oneLine(this.machineName, MAX_MACHINE_NAME),
       document,
-      capabilities: CAPABILITIES.slice(),
+      capabilities: capabilitiesFor(this.app),
       allow_agent: snap.allow_agent === undefined ? true : Boolean(snap.allow_agent),
     };
   }

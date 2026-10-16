@@ -166,6 +166,7 @@ class MockState:
             self.device = {}
             self.uploads = {}
             self.assets = {}
+            self.transcripts = {}
             self.requests = []
             self.deleted_sessions = []
             self.heartbeats = []
@@ -1063,6 +1064,68 @@ def get_color_preset_cube(h, slug):
     raise HttpError(404, "Not Found", "color preset not found")
 
 
+# ------------------------------------------------------------ transcription
+
+# POST /assets/{id}/transcription: the mock answers at once with two
+# segments and charges 1 credit per started minute, taking 1,000 bytes of
+# the file as one second of audio.
+MOCK_SEGMENTS = [
+    {"start": 0.0, "end": 4.2, "text": "This is the first line of the take."},
+    {"start": 4.2, "end": 9.0, "text": "And this is the second one."},
+]
+
+
+def transcript_view(asset_id, t):
+    return {
+        "asset_id": asset_id,
+        "status": "ready",
+        "language": t["language"],
+        "text": " ".join(s["text"] for s in t["segments"]),
+        "segments": t["segments"],
+        "model": "gpt-4o-mini-transcribe",
+        "duration_seconds": t["duration"],
+        "credits_charged": t["credits"],
+        "error": None,
+        "created_at": rfc3339(t["created_at"]),
+        "updated_at": rfc3339(t["created_at"]),
+    }
+
+
+@route("POST", r"/v1/assets/([^/]+)/transcription")
+def transcribe_asset(h, asset_id):
+    user = h.user()
+    body = strict_json(h.raw_body or b"{}", allowed=("language", "force")) if h.raw_body else {}
+    st = h.state
+    with st.cond:
+        asset = st.assets.get(asset_id)
+        if asset is None or asset["user_id"] != user["user_id"] or asset["status"] != "ready":
+            raise HttpError(404, "Not Found", "asset not found")
+        if modality(asset["content_type"]) not in ("audio", "video"):
+            raise HttpError(400, "Bad Request", "only video and audio assets can be transcribed")
+        existing = st.transcripts.get(asset_id)
+        if existing is None or body.get("force"):
+            size = len(asset["bytes"]) if asset["bytes"] is not None else asset["size_bytes"]
+            duration = round(size / 1000.0, 3)
+            existing = {"language": body.get("language"), "segments": MOCK_SEGMENTS, "duration": duration,
+                        "credits": max(1, -(-int(duration) // 60)), "created_at": now()}
+            st.transcripts[asset_id] = existing
+        view = transcript_view(asset_id, existing)
+    return h._send(200, view)
+
+
+@route("GET", r"/v1/assets/([^/]+)/transcription")
+def get_transcription(h, asset_id):
+    user = h.user()
+    st = h.state
+    with st.cond:
+        asset = st.assets.get(asset_id)
+        t = st.transcripts.get(asset_id)
+        if asset is None or asset["user_id"] != user["user_id"] or t is None:
+            raise HttpError(404, "Not Found", "no transcript")
+        view = transcript_view(asset_id, t)
+    return h._send(200, view)
+
+
 # ------------------------------------------------------------ test helpers
 
 @route("POST", r"/mock/assets")
@@ -1104,6 +1167,8 @@ def mock_state(h):
             "last_heartbeat": st.heartbeats[-1]["body"] if st.heartbeats else None,
             "uploads": [{k: v for k, v in u.items() if k != "bytes"} for u in st.uploads.values()],
             "requests": list(st.requests),
+            "transcripts": [{"asset_id": k, "language": v["language"], "credits": v["credits"]}
+                            for k, v in st.transcripts.items()],
         }
     return h._send(200, out)
 

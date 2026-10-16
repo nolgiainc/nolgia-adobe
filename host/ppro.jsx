@@ -357,6 +357,181 @@
     };
   };
 
+  // ---------------------------------------------------------- transcribe
+
+  var MP3_PRESETS = ["MediaIO/systempresets/3F3F3F3F_4D503320/MP3 128kbps.epr"];
+  var TEMP_BIN = "NOLGIA transcription (temporary)";
+
+  function isMediaClip(item) {
+    if (!item || (item.type !== ProjectItemType.CLIP && item.type !== ProjectItemType.FILE)) return false;
+    try {
+      if (item.isSequence()) return false;
+    } catch (e) {}
+    return true;
+  }
+
+  function mediaPath(item) {
+    try {
+      return String(item.getMediaPath() || "");
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function clipEntry(item) {
+    var entry = { name: String(item.name), path: mediaPath(item), node_id: String(item.nodeId) };
+    try {
+      var d = Number(item.getOutPoint().seconds) - Number(item.getInPoint().seconds);
+      if (d > 0) entry.duration = N.round(d, 3);
+    } catch (e) {}
+    return entry;
+  }
+
+  function eachItem(item, fn, depth) {
+    for (var i = 0; i < item.children.numItems; i++) {
+      var child = item.children[i];
+      if (child.type === ProjectItemType.BIN) {
+        if (depth < 12) eachItem(child, fn, depth + 1);
+      } else if (fn(child) === true) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function findItem(test) {
+    var found = null;
+    eachItem(project().rootItem, function (item) {
+      if (test(item)) {
+        found = item;
+        return true;
+      }
+      return false;
+    }, 0);
+    return found;
+  }
+
+  // The clips a transcription is about: the selected clips in the Project
+  // panel (or, with none, the clips selected in the active sequence), every
+  // clip used in a sequence, or clips named by name or media path.
+  A.transcribe_targets = function (args) {
+    project();
+    var out = [];
+    var seen = {};
+    var skipped = 0;
+    var notFound = [];
+    var note = "";
+    function add(item) {
+      if (!isMediaClip(item)) return;
+      if (seen[item.nodeId]) return;
+      seen[item.nodeId] = true;
+      var entry = clipEntry(item);
+      if (!entry.path) {
+        skipped++;
+        return;
+      }
+      out.push(entry);
+    }
+    if (args.clips === "selected") {
+      var sel = null;
+      try {
+        sel = app.getCurrentProjectViewSelection();
+      } catch (e) {}
+      for (var i = 0; sel && i < sel.length; i++) add(sel[i]);
+      if (!out.length) {
+        var seq = app.project.activeSequence;
+        if (seq) {
+          var picked = seq.getSelection();
+          for (var j = 0; picked && j < picked.length; j++) {
+            try {
+              if (picked[j].projectItem) add(picked[j].projectItem);
+            } catch (e2) {}
+          }
+        }
+      }
+      if (!out.length) note = "Nothing is selected: select clips in the Project panel (or on the timeline), or pass clips.";
+    } else if (args.clips === "sequence") {
+      var target = findSequence(args.sequence, true);
+      var groups = [target.videoTracks, target.audioTracks];
+      for (var g = 0; g < groups.length; g++) {
+        for (var t = 0; t < groups[g].numTracks; t++) {
+          var clips = groups[g][t].clips;
+          for (var c = 0; c < clips.numItems; c++) {
+            try {
+              if (clips[c].projectItem) add(clips[c].projectItem);
+            } catch (e3) {}
+          }
+        }
+      }
+      if (!out.length) note = "Sequence " + target.name + " has no clips with media.";
+    } else {
+      for (var k = 0; k < args.clips.length; k++) {
+        var want = String(args.clips[k]);
+        var item = findItem(function (it) {
+          return isMediaClip(it) && (it.name === want || samePath(mediaPath(it), want));
+        });
+        if (item) add(item);
+        else notFound.push(want);
+      }
+      if (!out.length) note = "None of those clips are in the open project.";
+    }
+    var result = { clips: out, note: note };
+    if (notFound.length) result.not_found = notFound;
+    if (skipped) result.skipped_without_media = skipped;
+    return result;
+  };
+
+  function mp3Preset() {
+    var base = String(app.path).replace(/\\/g, "/").replace(/\/?$/, "/");
+    var bases = [base, base + "Contents/"];
+    for (var b = 0; b < bases.length; b++) {
+      for (var i = 0; i < MP3_PRESETS.length; i++) {
+        var f = new File(bases[b] + MP3_PRESETS[i]);
+        if (f.exists) return f.fsName;
+      }
+    }
+    N.fail("Could not find Premiere Pro's MP3 export preset under " + base + "MediaIO/systempresets.");
+  }
+
+  // The audio of one clip as an MP3, for NOLGIA's transcription: a temporary
+  // sequence of just that clip in a temporary bin, exported and removed.
+  A.transcribe_audio = function (args) {
+    var p = project();
+    var item = findItem(function (it) {
+      return isMediaClip(it) && (String(it.nodeId) === String(args.node_id) || (!args.node_id && samePath(mediaPath(it), args.path)));
+    });
+    if (!item) N.fail("The clip is no longer in the open project.");
+    var preset = mp3Preset();
+    var before = app.project.activeSequence;
+    var bin = p.rootItem.createBin(TEMP_BIN);
+    var seq = null;
+    var out = N.file(args.folder + "/" + args.stem + ".mp3");
+    var answer = null;
+    var seconds = null;
+    try {
+      seq = app.project.createNewSequenceFromClips("NOLGIA audio " + item.name, [item], bin);
+      if (!seq) N.fail("Premiere Pro could not make a sequence of " + item.name + " to export its audio.");
+      seconds = N.round(Number(seq.end) / TICKS, 3);
+      answer = seq.exportAsMediaDirect(out.fsName, preset, app.encoder.ENCODE_ENTIRE);
+    } finally {
+      if (seq) {
+        try {
+          app.project.deleteSequence(seq);
+        } catch (e) {}
+      }
+      try {
+        bin.deleteBin();
+      } catch (e2) {}
+      if (before) {
+        try {
+          app.project.openSequence(before.sequenceID);
+        } catch (e3) {}
+      }
+    }
+    if (!out.exists) N.fail("Premiere Pro did not write the audio of " + item.name + (answer ? ": " + answer : "."));
+    return { path: out.fsName, clip: String(item.name), duration: seconds };
+  };
+
   A.project_file = function () {
     if (!hasProject()) return { path: null, dirty: null };
     var f = N.file(app.project.path);

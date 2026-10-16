@@ -10,8 +10,15 @@
 const { parseTime, cutText } = require("./util");
 
 // Every kind this plugin implements, in the order the spec lists them. The
-// plugin advertises exactly these in `capabilities`.
+// plugin advertises these in `capabilities`, plus the kinds only some apps
+// have (APP_KINDS).
 const CAPABILITIES = ["info", "run", "preview", "import_asset", "export", "save", "open", "dit"];
+const APP_KINDS = { premiere: ["transcribe"] };
+
+// The kinds `app` (an entry of index.APPS) advertises.
+function capabilitiesFor(app) {
+  return CAPABILITIES.concat(APP_KINDS[app && app.app] || []);
+}
 
 const DEFAULT_TIMEOUT = 120;
 // The API takes at most 1 MB (2**20 bytes) of result JSON, measured after it
@@ -31,6 +38,9 @@ const IMPORT_AS = { after_effects: ["footage", "layer"], premiere: ["clip"], ill
 const LUT_APPS = ["premiere", "after_effects"];
 const PRESET_SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const APPLY_TO = ["current", "selected", "current_track", "all"];
+const TRANSCRIBE_CLIPS = ["selected", "sequence"];
+const TRANSCRIBE_ENGINES = ["auto", "premiere", "nolgia"];
+const MAX_TRANSCRIBE_CLIPS = 200;
 
 // A command failed. The message is shown to the agent and the person.
 class CommandError extends Error {
@@ -161,9 +171,10 @@ function parseFrames(value) {
 // Check and normalise a command's args for `app` (an entry of index.APPS).
 // Throws CommandError.
 function validate(app, kind, args) {
-  if (!CAPABILITIES.includes(kind)) {
+  const kinds = capabilitiesFor(app);
+  if (!kinds.includes(kind)) {
     throw new CommandError(
-      "This NOLGIA plugin for " + app.name + ' cannot do "' + kind + '". It can do: ' + CAPABILITIES.join(", ") +
+      "This NOLGIA plugin for " + app.name + ' cannot do "' + kind + '". It can do: ' + kinds.join(", ") +
         ". Updating the plugin may add it."
     );
   }
@@ -223,6 +234,8 @@ function validate(app, kind, args) {
     out.path = strArg(args, "path");
   } else if (kind === "open") {
     out.path = strArg(args, "path", { required: true });
+  } else if (kind === "transcribe") {
+    return validateTranscribe(args);
   } else if (kind === "dit") {
     // Required here so the app-side kinds above load without it.
     const dit = require("./dit");
@@ -233,6 +246,50 @@ function validate(app, kind, args) {
       throw e;
     }
   }
+  return out;
+}
+
+function boolArg(args, key) {
+  const value = args[key];
+  if (value === undefined || value === null) return false;
+  if (typeof value !== "boolean") throw new CommandError("`" + key + "` must be true or false.");
+  return value;
+}
+
+// `transcribe` (Premiere Pro): which clips, which engine, and whether
+// NOLGIA's transcription (credits) may be used. `action` follows a job.
+function validateTranscribe(args) {
+  const action = strArg(args, "action", { choices: ["start", "status", "cancel"] }) || "start";
+  if (action !== "start") {
+    return { action, job_id: strArg(args, "job_id", { required: true }) };
+  }
+  const out = { action };
+  const clips = args.clips;
+  if (clips === undefined || clips === null || clips === "") out.clips = "selected";
+  else if (typeof clips === "string") {
+    if (!TRANSCRIBE_CLIPS.includes(clips)) {
+      throw new CommandError("`clips` must be \"selected\", \"sequence\" or a list of clip names or media paths.");
+    }
+    out.clips = clips;
+  } else if (Array.isArray(clips)) {
+    if (!clips.length) throw new CommandError("`clips` is an empty list.");
+    if (clips.length > MAX_TRANSCRIBE_CLIPS) throw new CommandError("`clips` lists at most " + MAX_TRANSCRIBE_CLIPS + " clips.");
+    for (const c of clips) {
+      if (typeof c !== "string" || !c.trim()) throw new CommandError("Each entry of `clips` must be a clip name or a media path.");
+    }
+    out.clips = clips.map((c) => c.trim());
+  } else {
+    throw new CommandError("`clips` must be \"selected\", \"sequence\" or a list of clip names or media paths.");
+  }
+  out.sequence = strArg(args, "sequence");
+  out.engine = strArg(args, "engine", { choices: TRANSCRIBE_ENGINES }) || "auto";
+  out.allow_credits = boolArg(args, "allow_credits");
+  out.words = boolArg(args, "words");
+  const language = strArg(args, "language");
+  if (language !== null && !/^[a-z]{2}$/.test(language)) {
+    throw new CommandError("`language` must be a two-letter language code such as en.");
+  }
+  out.language = language || "en";
   return out;
 }
 
@@ -341,6 +398,8 @@ class ActivityLog {
 
 module.exports = {
   CAPABILITIES,
+  APP_KINDS,
+  capabilitiesFor,
   DEFAULT_TIMEOUT,
   MAX_RESULT_BYTES,
   RESULT_MARGIN,

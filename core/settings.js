@@ -37,6 +37,8 @@ const ENV_KEYS = [
   "NOLGIA_EXPORT_DIR",
   "NOLGIA_PREVIEW_MAX_BYTES",
   "NOLGIA_LUT_DIR",
+  "NOLGIA_TRANSCRIPTS",
+  "NOLGIA_TRANSCRIPTS_PORTS",
 ];
 
 const TRUE = ["1", "true", "yes", "on"];

@@ -32,6 +32,7 @@ const { Settings, loadEnv, envFlag, appDir } = require("./settings");
 const { BridgeWorker, Status } = require("./worker");
 const util = require("./util");
 const dit = require("./dit");
+const transcribe = require("./transcribe");
 
 // Camera log variants of NOLGIA's color presets: "<slug>-<suffix>" is the same
 // look for footage in that log encoding (nolgia-api render/colorgrade).
@@ -172,6 +173,7 @@ class Controller {
         Object.assign(item, { label: STATUS_LABELS[item.status] || item.status })
       ),
       document: this.snapshot.document,
+      transcripts: this.helper ? this.helper.status() : null,
     };
   }
 
@@ -200,6 +202,7 @@ class Controller {
   // After the app starts: reconnect when the person left it on.
   start() {
     this.applyEnv();
+    this.startHelper();
     const wanted = envFlag(this.env, "NOLGIA_BRIDGE_AUTOCONNECT") || this.settings.get("connected");
     if (wanted && this.signedIn) this.connect();
     else if (this.settings.get("connected")) this.settings.set({ connected: false });
@@ -601,6 +604,197 @@ class Controller {
     const job = this.ditJobs.start(cli, dit.argv(a));
     // Short work comes back finished; long work comes back as a job to follow.
     return this.ditJobs.waitOrReturn(job, Math.min(Math.max(1, command.remaining() - 5), 100));
+  }
+
+  // ---- transcribe (Premiere Pro)
+
+  // The local link NOLGIA Transcripts (the UXP helper) connects to. Only in
+  // Premiere Pro; NOLGIA_TRANSCRIPTS=0 leaves it off, and
+  // NOLGIA_TRANSCRIPTS_PORTS (comma separated) picks other ports.
+  startHelper() {
+    if (this.app.app !== "premiere" || this.helper || envFlag(this.env, "NOLGIA_TRANSCRIPTS") === false) return;
+    const ports = String(this.env.NOLGIA_TRANSCRIPTS_PORTS || "")
+      .split(",")
+      .map((p) => p.trim())
+      .filter((p) => /^\d+$/.test(p))
+      .map(Number);
+    this.helper = new transcribe.HelperLink({ ports: ports.length ? ports : undefined, log: (t) => this.log(t) });
+    this.helper.onChange = () => this.bump();
+    this.helper.start().catch((e) => this.log("NOLGIA Transcripts link did not start: " + e.message));
+  }
+
+  async do_transcribe(command, api) {
+    const a = command.args;
+    if (!this.transcribeJobs) this.transcribeJobs = new transcribe.Jobs();
+    try {
+      if (a.action === "status") return this.transcribeJobs.status(a.job_id);
+      if (a.action === "cancel") return this.transcribeJobs.cancel(a.job_id);
+    } catch (e) {
+      if (e instanceof transcribe.TranscribeError) throw new CommandError(e.message);
+      throw e;
+    }
+    const found = await this.hostOrFail("transcribe_targets", { clips: a.clips, sequence: a.sequence }, command);
+    const clips = found.clips || [];
+    if (!clips.length) {
+      throw new CommandError(
+        (found.note || "There are no clips with media to transcribe.") +
+          (found.not_found && found.not_found.length ? " Not found: " + found.not_found.join(", ") + "." : "")
+      );
+    }
+    const helper = this.helper ? this.helper.status() : { connected: false };
+    if (a.engine === "premiere" && !helper.connected) throw new CommandError(HELPER_MISSING);
+    if (a.engine === "nolgia" && !a.allow_credits) {
+      return {
+        running: false,
+        transcripts: [],
+        needs_credits: Object.assign(transcribe.estimate(clips), { clip_names: clips.map((c) => c.name) }),
+        note: CREDITS_NOTE,
+      };
+    }
+    const job = this.transcribeJobs.start((j) => this.runTranscription(j, a, clips, found, api));
+    return this.transcribeJobs.waitOrReturn(job, Math.min(Math.max(1, command.remaining() - 5), 100));
+  }
+
+  async runTranscription(job, a, clips, found, api) {
+    const dir = transcribe.transcriptDir(
+      this.snapshot.document && this.snapshot.document.path,
+      this.host.documents || path.join(os.homedir(), "Documents")
+    );
+    const out = { transcripts: [], missing: [], folder: dir, credits_charged: 0 };
+    if (found.not_found && found.not_found.length) out.not_found = found.not_found;
+    const helper = this.helper && this.helper.connected ? this.helper : null;
+    let rest = [];
+    if (a.engine !== "nolgia" && helper) {
+      for (let i = 0; i < clips.length; i++) {
+        const clip = clips[i];
+        if (job.cancelled) break;
+        job.progress = "Premiere Speech to Text: " + clip.name + " (" + (i + 1) + " of " + clips.length + ").";
+        let answer;
+        try {
+          answer = await helper.call(
+            "transcript",
+            { path: clip.path, name: clip.name, language: a.language, transcribe: true },
+            900
+          );
+        } catch (e) {
+          answer = { found: false, reason: "error", error: e.message };
+        }
+        if (answer && answer.found && answer.json) {
+          let entry;
+          try {
+            entry = transcribe.normalizePremiere(answer.json);
+          } catch (e) {
+            rest.push({ clip, reason: "error", error: e.message });
+            continue;
+          }
+          entry.engine = "premiere";
+          if (answer.made) entry.made_now = true;
+          const file = transcribe.saveTranscript(dir, clip, entry, answer.json);
+          out.transcripts.push(transcriptView(clip, entry, file, a.words));
+        } else {
+          rest.push(Object.assign({ clip }, answer || { reason: "error" }));
+        }
+      }
+    } else {
+      rest = clips.map((clip) => ({ clip, reason: a.engine === "nolgia" ? "engine" : "no_helper" }));
+    }
+    if (job.cancelled) {
+      out.cancelled = true;
+      return transcribe.fitResult(out);
+    }
+    if (rest.length && a.engine !== "premiere") {
+      if (!a.allow_credits) {
+        out.needs_credits = Object.assign(transcribe.estimate(rest.map((r) => r.clip)), {
+          clip_names: rest.map((r) => r.clip.name),
+        });
+        out.note = CREDITS_NOTE;
+        for (const r of rest) out.missing.push(missingView(r, helper));
+      } else {
+        for (let i = 0; i < rest.length; i++) {
+          const clip = rest[i].clip;
+          if (job.cancelled) {
+            out.cancelled = true;
+            break;
+          }
+          job.progress = "NOLGIA transcription: " + clip.name + " (" + (i + 1) + " of " + rest.length + ").";
+          try {
+            const { row, assetId } = await this.transcribeWithNolgia(api, clip, a.language);
+            const entry = transcribe.normalizeNolgia(row);
+            entry.engine = "nolgia";
+            entry.asset_id = assetId;
+            entry.credits_charged = row.credits_charged || 0;
+            out.credits_charged += entry.credits_charged;
+            const file = transcribe.saveTranscript(dir, clip, entry, null);
+            out.transcripts.push(transcriptView(clip, entry, file, a.words));
+          } catch (e) {
+            out.missing.push({ clip: clip.name, reason: "nolgia_failed", fix: String((e && e.message) || e) });
+          }
+        }
+      }
+    } else {
+      for (const r of rest) out.missing.push(missingView(r, helper));
+    }
+    if (!out.missing.length) delete out.missing;
+    out.helper = this.helper ? this.helper.status() : { connected: false };
+    if (out.transcripts.some((t) => t.speakers)) {
+      out.speakers_note = "Speaker names are Premiere's labels (Speaker 1, Speaker 2): ask the person who is who; never name anyone from their face.";
+    }
+    return transcribe.fitResult(out);
+  }
+
+  // NOLGIA's transcription of one clip: Premiere exports its audio as an MP3,
+  // it is uploaded to the person's library and transcribed there.
+  async transcribeWithNolgia(api, clip, language) {
+    if (clip.duration && clip.duration > transcribe.NOLGIA_MAX_SECONDS) {
+      throw new CommandError("NOLGIA transcribes up to 60 minutes of a clip; " + clip.name + " is longer.");
+    }
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), "nolgia-transcribe-"));
+    try {
+      const stem = util.safeFilename(path.parse(clip.name || "clip").name, "clip") + " audio";
+      const out = await this.callHostTimed("transcribe_audio", { node_id: clip.node_id, path: clip.path, folder, stem }, 900);
+      if (!out.ok) throw new CommandError(out.error || "Premiere Pro could not export the audio of " + clip.name + ".");
+      const file = await waitForFile(out.result.path, 60);
+      const asset = await this.upload(api, file, "audio/mpeg", {
+        filename: path.basename(file),
+        displayName: clip.name + " (audio for a transcript)",
+      });
+      let row;
+      try {
+        row = await api.transcribeAsset(asset.id, language);
+      } catch (err) {
+        if (!(err instanceof ApiError) || err.status !== 409) throw nolgiaError(err);
+        row = { status: "processing" };
+      }
+      const until = Date.now() + 6 * 60 * 1000;
+      while (row && row.status === "processing" && Date.now() < until) {
+        await util.sleep(5000);
+        try {
+          row = await api.getTranscription(asset.id);
+        } catch (err) {
+          throw nolgiaError(err);
+        }
+      }
+      if (!row || row.status !== "ready") {
+        throw new CommandError("NOLGIA could not transcribe " + clip.name + (row && row.error ? ": " + row.error : "."));
+      }
+      return { row, assetId: asset.id };
+    } finally {
+      fs.rmSync(folder, { recursive: true, force: true });
+    }
+  }
+
+  // A host call with its own time limit (jobs run after their command came
+  // back, so there is no command deadline).
+  async callHostTimed(kind, args, seconds) {
+    let timer = null;
+    const late = new Promise((resolve) => {
+      timer = util.timers.setTimeout(() => resolve({ ok: false, error: this.app.name + " took longer than " + seconds + " s." }), seconds * 1000);
+    });
+    try {
+      return await Promise.race([this.callHost(kind, args), late]);
+    } finally {
+      util.timers.clearTimeout(timer);
+    }
   }
 
   // ---- info
@@ -1074,6 +1268,10 @@ class Controller {
   shutdown() {
     this.cancelSignIn();
     this.stopSnapshots();
+    if (this.helper) {
+      this.helper.stop();
+      this.helper = null;
+    }
     const worker = this.worker;
     if (worker) {
       this.closedReason = this.app.name + " is closing.";
@@ -1085,6 +1283,70 @@ class Controller {
       this.lease = null;
     }
   }
+}
+
+const HELPER_MISSING =
+  "NOLGIA Transcripts is not running in Premiere Pro, so Premiere's own Speech to Text cannot be reached. It is a " +
+  "small second plugin (UXP, Premiere Pro 25.6 or later) that comes with NOLGIA for Premiere Pro: install " +
+  "nolgia-premiere-transcripts.ccx and restart Premiere. Or use NOLGIA's transcription (engine \"nolgia\", " +
+  "1 credit per started minute).";
+const CREDITS_NOTE =
+  "NOLGIA's transcription costs 1 credit per started minute of each clip. Tell the person the price and, if " +
+  "they agree, send the same command again with allow_credits: true.";
+
+const MISSING_FIX = {
+  no_helper: HELPER_MISSING,
+  engine: "Only NOLGIA's transcription was asked for.",
+  no_api:
+    "This Premiere Pro has no transcript scripting (it needs 25.6 or later). Update Premiere, or use NOLGIA's transcription.",
+  not_found: "NOLGIA Transcripts could not find this clip in the open project.",
+  no_transcript:
+    "Premiere has no transcript of this clip yet. In Premiere: select the clip, then Window > Text > Transcript > " +
+    "Transcribe (free, on this computer), or turn on Preferences > Transcription > Automatically transcribe video " +
+    "clips on import. Premiere Pro 26.5 and later make it without the click.",
+  language_pack:
+    "Premiere's speech pack for this language is not installed. Premiere downloads it the first time you click " +
+    "Transcribe in the Text panel.",
+  transcribe_failed: "Premiere's Speech to Text did not finish this clip.",
+  error: "NOLGIA Transcripts hit an error.",
+};
+
+function missingView(r, helper) {
+  const entry = { clip: r.clip.name, reason: r.reason || "error", fix: MISSING_FIX[r.reason] || MISSING_FIX.error };
+  if (r.error) entry.detail = String(r.error).slice(0, 300);
+  if (r.reason === "no_transcript" && r.can_transcribe) entry.fix = MISSING_FIX.transcribe_failed;
+  if (r.reason === "no_helper" && helper) entry.reason = "engine";
+  return entry;
+}
+
+function transcriptView(clip, entry, file, withWords) {
+  const view = {
+    clip: clip.name,
+    media: clip.path,
+    engine: entry.engine,
+    language: entry.language,
+    timing: entry.timing,
+    segments: entry.segments,
+    file,
+  };
+  if (clip.duration) view.duration = clip.duration;
+  const speakers = Array.from(new Set(entry.segments.map((s) => s.speaker).filter(Boolean)));
+  if (speakers.length) view.speakers = speakers;
+  const sentences = transcribe.sentencesFrom(entry.words, entry.segments);
+  if (sentences) view.sentences = sentences;
+  if (withWords && entry.words) view.words = entry.words;
+  if (entry.made_now) view.made_now = true;
+  for (const key of ["asset_id", "credits_charged"]) if (entry[key] !== undefined) view[key] = entry[key];
+  return view;
+}
+
+function nolgiaError(err) {
+  if (err instanceof ApiError) {
+    if (err.status === 402) return new CommandError("There are not enough NOLGIA credits for this transcription.");
+    return new CommandError("NOLGIA did not transcribe it: " + (err.detail || err.title || err.status));
+  }
+  if (err instanceof NetworkError) return new CommandError("Could not reach NOLGIA (" + err.message + ").");
+  return err;
 }
 
 // Some app exports finish writing a moment after the script returns; wait
