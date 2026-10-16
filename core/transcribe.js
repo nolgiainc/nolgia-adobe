@@ -86,26 +86,46 @@ class HelperLink {
 
   // Listen on the first free port. Resolves the port, or null when none is
   // free (the command then says so; nothing else breaks).
+  // Listen on `host`: resolves the server, or the error code.
+  listenOn(port, host) {
+    const server = http.createServer((req, res) => this.handle(req, res));
+    return new Promise((resolve) => {
+      server.once("error", (err) => {
+        try {
+          server.close();
+        } catch (e) {
+          // never listened
+        }
+        resolve((err && err.code) || "error");
+      });
+      server.listen(port, host, () => resolve(server));
+    });
+  }
+
+  // The helper reaches the link as localhost (Premiere's UXP takes network
+  // permissions by host name), which macOS resolves to ::1 first: so the
+  // link listens on the IPv4 and the IPv6 loopback, on the same port, and
+  // nowhere else.
   async start() {
     this.secret = crypto.randomBytes(24).toString("hex");
     for (const port of this.ports) {
-      const server = http.createServer((req, res) => this.handle(req, res));
-      const ok = await new Promise((resolve) => {
-        server.once("error", () => resolve(false));
-        server.listen(port, "127.0.0.1", () => resolve(true));
-      });
-      if (ok) {
-        this.server = server;
-        this.port = server.address().port; // port 0 (tests) picks a free one
-        this.writeLinkFile();
-        this.log("Waiting for NOLGIA Transcripts on 127.0.0.1:" + this.port + ".");
-        return this.port;
+      const v4 = await this.listenOn(port, "127.0.0.1");
+      if (typeof v4 === "string") continue;
+      const actual = v4.address().port; // port 0 (tests) picks a free one
+      const v6 = await this.listenOn(actual, "::1");
+      if (v6 === "EADDRINUSE") {
+        // Something else answers localhost on this port: try the next one.
+        v4.close();
+        continue;
       }
-      try {
-        server.close();
-      } catch (e) {
-        // ignore
-      }
+      this.server = v4;
+      this.servers = typeof v6 === "string" ? [v4] : [v4, v6]; // no IPv6 here: IPv4 only
+      this.port = actual;
+      this.writeLinkFile();
+      this.log(
+        "Waiting for NOLGIA Transcripts on 127.0.0.1" + (this.servers.length > 1 ? " and [::1]" : "") + ":" + this.port + "."
+      );
+      return this.port;
     }
     this.log("Ports " + this.ports.join(", ") + " are all taken, so NOLGIA Transcripts cannot connect.");
     return null;
@@ -142,8 +162,9 @@ class HelperLink {
     }
     this.queue = [];
     this.pending.clear();
-    if (this.server) this.server.close();
+    for (const server of this.servers || (this.server ? [this.server] : [])) server.close();
     this.server = null;
+    this.servers = [];
   }
 
   get connected() {
@@ -193,7 +214,9 @@ class HelperLink {
     // without a CORS preflight (never answered), and a DNS-rebound page
     // arrives with its own Host.
     const host = String(req.headers.host || "").toLowerCase();
-    if (host !== "127.0.0.1:" + port && host !== "localhost:" + port) return send(res, 403, { error: "forbidden" });
+    if (!["127.0.0.1:", "localhost:", "[::1]:"].some((name) => host === name + port)) {
+      return send(res, 403, { error: "forbidden" });
+    }
     if (!this.secretMatches(req.headers["x-nolgia-helper"])) return send(res, 403, { error: "forbidden" });
     if (req.method !== "POST") return send(res, 405, { error: "POST only" });
     readBody(req, MAX_HELPER_BODY)
@@ -228,7 +251,8 @@ class HelperLink {
       this.waiter = { res, timer: null };
       return this.answerPoll(this.queue.shift());
     }
-    const wait = Math.max(0, Math.min(POLL_WAIT, Number(body && body.wait) || POLL_WAIT));
+    const asked = body && body.wait !== undefined && body.wait !== null ? Number(body.wait) : POLL_WAIT;
+    const wait = Math.max(0, Math.min(POLL_WAIT, Number.isFinite(asked) ? asked : POLL_WAIT));
     const waiter = { res, timer: null };
     waiter.timer = util.timers.setTimeout(() => {
       if (this.waiter === waiter) this.answerPoll(null);

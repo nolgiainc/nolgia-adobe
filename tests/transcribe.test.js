@@ -224,10 +224,14 @@ test("before 26.5 Premiere's transcripts are read, not made", async () => {
   }
 });
 
-function raw(port, { host, header = null, body = "{}" } = {}) {
+function raw6(port, options) {
+  return raw(port, Object.assign({ address: "::1" }, options));
+}
+
+function raw(port, { host, header = null, body = "{}", address = "127.0.0.1" } = {}) {
   return new Promise((resolve, reject) => {
     const req = http.request(
-      { host: "127.0.0.1", port, path: tx.HELPER_PATH + "/poll", method: "POST", headers: Object.assign({ Host: host || "127.0.0.1:" + port }, header ? { "X-NOLGIA-Helper": header } : {}) },
+      { host: address, port, path: tx.HELPER_PATH + "/poll", method: "POST", headers: Object.assign({ Host: host || "127.0.0.1:" + port }, header ? { "X-NOLGIA-Helper": header } : {}) },
       (res) => {
         res.resume();
         res.on("end", () => resolve(res.statusCode));
@@ -248,11 +252,17 @@ test("the local link answers only the helper: this session's secret, a 127.0.0.1
   assert.ok(file.secret.length >= 48);
   try {
     assert.equal(link.server.address().address, "127.0.0.1", "never on another interface");
+    for (const server of link.servers) assert.ok(["127.0.0.1", "::1"].includes(server.address().address), "loopback only");
     assert.equal(await raw(port, {}), 403, "no secret");
     assert.equal(await raw(port, { header: "1" }), 403, "not the secret");
     assert.equal(await raw(port, { header: file.secret.slice(0, -1) + "x" }), 403, "a near miss");
     assert.equal(await raw(port, { header: file.secret, host: "evil.example:" + port }), 403, "a DNS-rebound page has its own Host");
     assert.equal(link.connected, false, "none of these counts as the helper");
+    if (link.servers.length > 1) {
+      // localhost may be ::1 first (macOS): the IPv6 loopback answers, with the same checks.
+      assert.equal(await raw6(port, { host: "localhost:" + port }), 403, "no secret on ::1 either");
+      assert.equal(await raw6(port, { header: file.secret, host: "[::1]:" + port, body: JSON.stringify({ wait: 0 }) }), 200);
+    }
     assert.equal(await raw(port, { header: file.secret, body: JSON.stringify({ wait: 0 }) }), 200, "the helper itself");
   } finally {
     link.stop();
@@ -404,9 +414,14 @@ test("transcribe: engine premiere needs NOLGIA Transcripts", async () => {
 test("Install transcripts runs Adobe's installer on the bundled package", async () => {
   const root = support.tempDir();
   const record = path.join(root, "args.txt");
-  const fake = (name, output, code) => {
+  const fake = (name, output, code, list = "") => {
     const file = path.join(root, name);
-    fs.writeFileSync(file, '#!/bin/sh\necho "$@" > "' + record + '"\necho "' + output + '"\nexit ' + code + "\n", { mode: 0o755 });
+    fs.writeFileSync(
+      file,
+      '#!/bin/sh\nif [ "$1" = "--list" ]; then printf "%s\\n" "' + list + '"; exit 0; fi\n' +
+        'echo "$@" > "' + record + '"\necho "' + output + '"\nexit ' + code + "\n",
+      { mode: 0o755 }
+    );
     return file;
   };
   const pkg = path.join(root, "nolgia-premiere-transcripts.ccx");
@@ -428,6 +443,14 @@ test("Install transcripts runs Adobe's installer on the bundled package", async 
   await support.until(() => bad.transcriptsInstall.status !== "running", 10, "installer done");
   assert.equal(bad.transcriptsInstall.status, "failed");
   assert.match(bad.transcriptsInstall.message, /did not install NOLGIA Transcripts: Installation Failed/);
+
+  // macOS: the installer timed out waiting for Creative Cloud (-642) but the
+  // install went through; its list says so.
+  const slow = make(fake("upia-slow", "Error: -642", 1, " Enabled    NOLGIA Transcripts      0.1.4"));
+  slow.action({ action: "install_transcripts" });
+  await support.until(() => slow.transcriptsInstall.status !== "running", 10, "installer done");
+  assert.equal(slow.transcriptsInstall.status, "done");
+  assert.match(slow.transcriptsInstall.message, /^Installed \(0\.1\.4\)\./);
 
   const missing = make(path.join(root, "no-such-installer"));
   missing.action({ action: "install_transcripts" });

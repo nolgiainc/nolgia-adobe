@@ -670,19 +670,21 @@ class Controller {
       return done("failed", "Adobe's installer (part of Creative Cloud) was not found, so NOLGIA Transcripts cannot be installed from here.");
     }
     done("running", "Installing NOLGIA Transcripts...");
-    const flag = process.platform === "win32" ? "/install" : "--install";
-    childProcess.execFile(tool, [flag, pkg], { windowsHide: true, timeout: 180000 }, (err, stdout, stderr) => {
+    const flag = (verb) => (process.platform === "win32" ? "/" : "--") + verb;
+    const installed = "Installed. It starts with Premiere Pro; if Transcripts does not say it is running within a minute, open " +
+      "Window > UXP Plugins > NOLGIA Transcripts once.";
+    childProcess.execFile(tool, [flag("install"), pkg], { windowsHide: true, timeout: 300000 }, (err, stdout, stderr) => {
       const text = (String(stdout || "") + "\n" + String(stderr || "")).trim();
       const last = text.split(/\r?\n/).filter(Boolean).pop() || "";
-      if (/Installation Successful|already installed/i.test(text) || (!err && !/fail/i.test(text))) {
-        done(
-          "done",
-          "Installed. It starts with Premiere Pro; if Transcripts does not say it is running within a minute, open " +
-            "Window > UXP Plugins > NOLGIA Transcripts once."
-        );
-      } else {
+      if (/Installation Successful|already installed/i.test(text) || (!err && !/fail/i.test(text))) return done("done", installed);
+      // The installer can give up waiting for Creative Cloud (-642 on macOS)
+      // after the install went through: ask it what is installed before
+      // calling it a failure.
+      childProcess.execFile(tool, [flag("list"), "all"], { windowsHide: true, timeout: 120000 }, (err2, listed) => {
+        const found = /NOLGIA Transcripts\s+(\d+(?:\.\d+)+)/.exec(String(listed || ""));
+        if (found) return done("done", installed.replace("Installed.", "Installed (" + found[1] + ")."));
         done("failed", "Adobe's installer did not install NOLGIA Transcripts" + (last ? ": " + last.slice(0, 200) : "."));
-      }
+      });
     });
   }
 
