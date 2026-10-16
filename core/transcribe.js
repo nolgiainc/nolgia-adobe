@@ -407,7 +407,9 @@ function normalizePremiere(raw) {
     const entry = { start: round3(start), end: round3(end !== null ? end : start), text };
     const speaker = first(seg, ["speaker", "speakerId", "speaker_id", "Speaker"]);
     if (speaker !== undefined && speaker !== null && speaker !== "") {
-      entry.speaker = speakers.get(String(speaker)) || String(speaker);
+      const label = speakers.get(String(speaker)) || String(speaker);
+      // Premiere says "Unknown" when speaker labeling is off: that is no label.
+      if (!/^unknown$/i.test(label.trim())) entry.speaker = label;
     }
     out.push(entry);
     for (const w of words) {
@@ -497,7 +499,9 @@ function transcriptDir(projectPath, documents) {
 function saveTranscript(dir, clip, entry, raw) {
   fs.mkdirSync(dir, { recursive: true });
   const stem = util.safeFilename(path.parse(clip.name || path.basename(clip.path || "clip")).name, "clip");
-  const file = path.join(dir, stem + ".json");
+  // Premiere's transcript is <clip>.json, NOLGIA's <clip>.nolgia.json, so
+  // one never replaces the other.
+  const file = path.join(dir, stem + (entry.engine === "nolgia" ? ".nolgia" : "") + ".json");
   const body = Object.assign({ clip: clip.name, media: clip.path || null }, entry);
   if (raw !== undefined && raw !== null) body.premiere = typeof raw === "string" ? safeParse(raw) : raw;
   fs.writeFileSync(file, JSON.stringify(body, null, 2));

@@ -75,6 +75,14 @@ test("a transcript as Premiere Pro 26.2 exported it (Transcript.exportToJSON)", 
   assert.deepEqual(t.words.map((w) => w.text), ["I", "asked", "for", "a", "quiet", "room."]);
 });
 
+test("Premiere's Unknown speaker (labeling off) is no label", () => {
+  const t = tx.normalizePremiere({
+    segments: [{ start: 0.02, duration: 1.64, speaker: "u1", words: [{ text: "Quiet.", start: 0.02, duration: 0.5 }] }],
+    speakers: [{ id: "u1", name: "Unknown" }],
+  });
+  assert.deepEqual(t.segments, [{ start: 0.02, end: 1.66, text: "Quiet." }]);
+});
+
 test("times in ticks and plain text segments are read too", () => {
   const ticks = 254016000000;
   const t = tx.normalizePremiere({ segments: [{ startTime: 2 * ticks, endTime: 4.5 * ticks, text: "Hello there." }] });
@@ -366,6 +374,7 @@ test("transcribe: Premiere's transcript where it has one, NOLGIA's for the rest 
     const second = await ctl.do_transcribe(command({ clips: ["A.mp4", "B.mp4"], allow_credits: true }), api);
     assert.deepEqual(second.transcripts.map((t) => [t.clip, t.engine]), [["A.mp4", "premiere"], ["B.mp4", "nolgia"]]);
     const b = second.transcripts[1];
+    assert.equal(path.basename(b.file), "B.nolgia.json", "NOLGIA's never replaces Premiere's");
     assert.equal(b.timing, "chunks");
     assert.equal(b.segments.length, 2);
     assert.equal(b.credits_charged, 2);
