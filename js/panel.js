@@ -142,6 +142,15 @@
             : "Transcripts: reads the transcripts Premiere has."
           : "Transcripts: NOLGIA Transcripts is not running in Premiere.";
         main.appendChild(el("div", { class: "account", text: line }));
+        const busy = t.install && t.install.status === "running";
+        if (!t.connected) {
+          main.appendChild(
+            el("div", { style: "margin-bottom:8px" }, [
+              button(busy ? "Installing..." : "Install transcripts", () => send("install_transcripts"), "small"),
+            ])
+          );
+        }
+        if (t.install && t.install.message) main.appendChild(el("div", { class: "message", text: t.install.message }));
       }
     }
 

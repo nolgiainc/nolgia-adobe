@@ -152,6 +152,8 @@ function main() {
   fs.rmSync(stage, { recursive: true, force: true });
   fs.mkdirSync(stage, { recursive: true });
   for (const name of INCLUDE) copyTree(path.join(ADOBE, name), path.join(stage, name));
+  // NOLGIA Transcripts goes inside, for the panel's Install transcripts.
+  require("./build-transcripts").build(path.join(stage, "transcripts", "nolgia-premiere-transcripts.ccx"));
   if (opts.debug) {
     fs.writeFileSync(path.join(stage, ".debug"), DEBUG_FILE);
     console.log("Development build: DevTools ports open (.debug). Do not ship this one.");

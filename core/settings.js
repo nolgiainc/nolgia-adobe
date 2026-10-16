@@ -39,6 +39,8 @@ const ENV_KEYS = [
   "NOLGIA_LUT_DIR",
   "NOLGIA_TRANSCRIPTS",
   "NOLGIA_TRANSCRIPTS_PORTS",
+  "NOLGIA_UPIA",
+  "NOLGIA_TRANSCRIPTS_PACKAGE",
 ];
 
 const TRUE = ["1", "true", "yes", "on"];

@@ -393,8 +393,48 @@ test("transcribe: engine premiere needs NOLGIA Transcripts", async () => {
     // auto without the helper and without credits: the price and how to get the helper.
     const res = await ctl.do_transcribe(command({}), null);
     assert.equal(res.needs_credits.credits, 1);
-    assert.match(res.missing[0].fix, /nolgia-premiere-transcripts/);
+    assert.match(res.missing[0].fix, /Install transcripts in the NOLGIA panel/);
   } finally {
     ctl.shutdown();
   }
+});
+
+// Install transcripts in the panel runs Adobe's installer on the package
+// inside the extension, and says how it went; only the panel's action does.
+test("Install transcripts runs Adobe's installer on the bundled package", async () => {
+  const root = support.tempDir();
+  const record = path.join(root, "args.txt");
+  const fake = (name, output, code) => {
+    const file = path.join(root, name);
+    fs.writeFileSync(file, '#!/bin/sh\necho "$@" > "' + record + '"\necho "' + output + '"\nexit ' + code + "\n", { mode: 0o755 });
+    return file;
+  };
+  const pkg = path.join(root, "nolgia-premiere-transcripts.ccx");
+  fs.writeFileSync(pkg, "zip");
+  const host = premiereHost([]);
+  const make = (tool) =>
+    new Controller(host, { environ: { NOLGIA_TRANSCRIPTS: "0", NOLGIA_UPIA: tool, NOLGIA_TRANSCRIPTS_PACKAGE: pkg } });
+
+  const ok = make(fake("upia-ok", "Installation Successful for extension with file path = " + pkg, 0));
+  ok.action({ action: "install_transcripts" });
+  assert.equal(ok.state().transcripts.install.status, "running");
+  await support.until(() => ok.transcriptsInstall.status !== "running", 10, "installer done");
+  assert.equal(ok.state().transcripts.install.status, "done");
+  assert.match(ok.state().transcripts.install.message, /UXP Plugins > NOLGIA Transcripts/);
+  assert.equal(fs.readFileSync(record, "utf8").trim(), "--install " + pkg);
+
+  const bad = make(fake("upia-bad", "Installation Failed: the extension is not signed", 1));
+  bad.action({ action: "install_transcripts" });
+  await support.until(() => bad.transcriptsInstall.status !== "running", 10, "installer done");
+  assert.equal(bad.transcriptsInstall.status, "failed");
+  assert.match(bad.transcriptsInstall.message, /did not install NOLGIA Transcripts: Installation Failed/);
+
+  const missing = make(path.join(root, "no-such-installer"));
+  missing.action({ action: "install_transcripts" });
+  assert.match(missing.transcriptsInstall.message, /installer \(part of Creative Cloud\) was not found/);
+
+  const ae = new Controller(Object.assign({}, host, { hostId: "AEFT" }), { environ: { NOLGIA_UPIA: fake("upia-ae", "x", 0), NOLGIA_TRANSCRIPTS_PACKAGE: pkg } });
+  ae.action({ action: "install_transcripts" });
+  assert.equal(ae.transcriptsInstall, undefined, "only Premiere Pro");
+  assert.equal(ae.state().transcripts, null);
 });

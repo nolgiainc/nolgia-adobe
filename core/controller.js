@@ -19,6 +19,7 @@
 
 "use strict";
 
+const childProcess = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -49,6 +50,18 @@ function lutFileName(text, fallback) {
   const clean = String(text || "").replace(/[^A-Za-z0-9 ._()&+'-]+/g, " ").replace(/\s+/g, " ").trim().replace(/^[ .]+|[ .]+$/g, "");
   return clean.slice(0, 100) || fallback;
 }
+
+// Adobe's own installer (part of Creative Cloud), which installs the bundled
+// NOLGIA Transcripts package when the person clicks Install transcripts.
+const UPIA = {
+  win32:
+    "C:\\Program Files\\Common Files\\Adobe\\Adobe Desktop Common\\RemoteComponents\\UPI\\" +
+    "UnifiedPluginInstallerAgent\\UnifiedPluginInstallerAgent.exe",
+  darwin:
+    "/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/" +
+    "UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent",
+};
+const TRANSCRIPTS_PACKAGE = path.join(__dirname, "..", "transcripts", "nolgia-premiere-transcripts.ccx");
 
 // The MCP preview tool shows a still inline only up to 3,750,000 bytes.
 const PREVIEW_MAX_BYTES = 3600000;
@@ -173,7 +186,7 @@ class Controller {
         Object.assign(item, { label: STATUS_LABELS[item.status] || item.status })
       ),
       document: this.snapshot.document,
-      transcripts: this.helper ? this.helper.status() : null,
+      transcripts: this.app.app === "premiere" ? this.transcriptsState() : null,
     };
   }
 
@@ -405,6 +418,8 @@ class Controller {
     else if (kind === "approve" || kind === "deny") {
       const pending = this.approvals.find((p) => p.id === msg.id);
       if (pending) pending.settle(kind === "approve" ? "approved" : "denied");
+    } else if (kind === "install_transcripts") {
+      this.installTranscripts();
     } else if (kind === "clear_activity") {
       this.activity.clear();
     }
@@ -629,6 +644,46 @@ class Controller {
     this.helper = new transcribe.HelperLink({ ports: ports.length ? ports : undefined, dir: this.dir, log: (t) => this.log(t) });
     this.helper.onChange = () => this.bump();
     this.helper.start().catch((e) => this.log("NOLGIA Transcripts link did not start: " + e.message));
+  }
+
+  transcriptsState() {
+    const out = this.helper ? this.helper.status() : { connected: false };
+    if (this.transcriptsInstall) out.install = Object.assign({}, this.transcriptsInstall);
+    return out;
+  }
+
+  // Install transcripts in the panel: Adobe's installer installs the NOLGIA
+  // Transcripts package that comes inside this extension. Only ever on the
+  // person's click, never from a command.
+  installTranscripts() {
+    if (this.app.app !== "premiere") return;
+    if (this.transcriptsInstall && this.transcriptsInstall.status === "running") return;
+    const tool = this.env.NOLGIA_UPIA || UPIA[process.platform];
+    const pkg = this.env.NOLGIA_TRANSCRIPTS_PACKAGE || TRANSCRIPTS_PACKAGE;
+    const done = (status, message) => {
+      this.transcriptsInstall = { status, message };
+      this.log("Install transcripts: " + message);
+      this.bump();
+    };
+    if (!fs.existsSync(pkg)) return done("failed", "This copy of NOLGIA has no NOLGIA Transcripts package.");
+    if (!tool || !fs.existsSync(tool)) {
+      return done("failed", "Adobe's installer (part of Creative Cloud) was not found, so NOLGIA Transcripts cannot be installed from here.");
+    }
+    done("running", "Installing NOLGIA Transcripts...");
+    const flag = process.platform === "win32" ? "/install" : "--install";
+    childProcess.execFile(tool, [flag, pkg], { windowsHide: true, timeout: 180000 }, (err, stdout, stderr) => {
+      const text = (String(stdout || "") + "\n" + String(stderr || "")).trim();
+      const last = text.split(/\r?\n/).filter(Boolean).pop() || "";
+      if (/Installation Successful|already installed/i.test(text) || (!err && !/fail/i.test(text))) {
+        done(
+          "done",
+          "Installed. It starts with Premiere Pro; if Transcripts does not say it is running within a minute, open " +
+            "Window > UXP Plugins > NOLGIA Transcripts once."
+        );
+      } else {
+        done("failed", "Adobe's installer did not install NOLGIA Transcripts" + (last ? ": " + last.slice(0, 200) : "."));
+      }
+    });
   }
 
   async do_transcribe(command, api) {
@@ -1292,8 +1347,9 @@ class Controller {
 
 const HELPER_MISSING =
   "NOLGIA Transcripts is not running in Premiere Pro, so Premiere's own Speech to Text cannot be reached. It is a " +
-  "small second plugin (UXP, Premiere Pro 25.6 or later) that comes with NOLGIA for Premiere Pro: install " +
-  "nolgia-premiere-transcripts.ccx and restart Premiere. Or use NOLGIA's transcription (engine \"nolgia\", " +
+  "small second plugin (UXP, Premiere Pro 25.6 or later) that comes with NOLGIA for Premiere Pro: ask the person " +
+  "to click Install transcripts in the NOLGIA panel (Window > Extensions > NOLGIA), or, when it is installed, to " +
+  "open Window > UXP Plugins > NOLGIA Transcripts once. Or use NOLGIA's transcription (engine \"nolgia\", " +
   "1 credit per started minute).";
 const CREDITS_NOTE =
   "NOLGIA's transcription costs 1 credit per started minute of each clip. Tell the person the price and, if " +
