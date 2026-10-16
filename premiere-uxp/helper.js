@@ -72,7 +72,10 @@ class Helper {
   // ------------------------------------------------------------ the link
 
   async post(link, urlPath, body) {
-    const res = await this.fetch("http://127.0.0.1:" + link.port + urlPath, {
+    // Premiere's UXP takes network permissions by host name: an
+    // http://127.0.0.1 entry is refused ("Manifest entry not found"), so
+    // the link is reached as localhost (the service listens on 127.0.0.1).
+    const res = await this.fetch("http://localhost:" + link.port + urlPath, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-NOLGIA-Helper": link.secret },
       body: JSON.stringify(body),
@@ -88,6 +91,7 @@ class Helper {
     try {
       link = await this.readLink();
     } catch (e) {
+      this.problem = "Cannot read the link file: " + String((e && e.message) || e);
       link = null;
     }
     if (!link || (!PORTS.includes(Number(link.port)) && !this.anyPort)) return null;
@@ -107,6 +111,7 @@ class Helper {
           reply = await this.post(link, POLL_PATH, { info: this.info(), wait: POLL_WAIT });
           answered = true;
         } catch (e) {
+          this.problem = "Cannot reach NOLGIA for Premiere Pro on port " + link.port + ": " + String((e && e.message) || e);
           this.link = null; // read the file again: a new session has a new secret
         }
         if (answered) {
@@ -125,10 +130,13 @@ class Helper {
       }
       if (!answered) {
         misses += 1;
-        if (this.status.connected || misses === 1) {
+        if (this.status.connected || misses === 1 || this.problem !== this.status.last) {
           this.setStatus({
             connected: false,
-            text: "Waiting for NOLGIA for Premiere Pro to be connected (Window > Extensions > NOLGIA).",
+            text: this.problem
+              ? "Not connected. " + this.problem
+              : "Waiting for NOLGIA for Premiere Pro to be connected (Window > Extensions > NOLGIA).",
+            last: "",
           });
         }
         await this.sleep(Math.min(10000, 2000 * misses));

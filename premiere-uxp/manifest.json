@@ -15,9 +15,9 @@
   "requiredPermissions": {
     "network": {
       "domains": [
-        "http://127.0.0.1:47731",
-        "http://127.0.0.1:47732",
-        "http://127.0.0.1:47733"
+        "http://localhost:47731",
+        "http://localhost:47732",
+        "http://localhost:47733"
       ]
     },
     "localFileSystem": "fullAccess"
@@ -26,11 +26,25 @@
     {
       "type": "panel",
       "id": "transcripts",
-      "label": { "default": "NOLGIA Transcripts" },
-      "minimumSize": { "width": 220, "height": 120 },
-      "maximumSize": { "width": 2000, "height": 2000 },
-      "preferredDockedSize": { "width": 280, "height": 200 },
-      "preferredFloatingSize": { "width": 300, "height": 220 }
+      "label": {
+        "default": "NOLGIA Transcripts"
+      },
+      "minimumSize": {
+        "width": 220,
+        "height": 120
+      },
+      "maximumSize": {
+        "width": 2000,
+        "height": 2000
+      },
+      "preferredDockedSize": {
+        "width": 280,
+        "height": 200
+      },
+      "preferredFloatingSize": {
+        "width": 300,
+        "height": 220
+      }
     }
   ]
 }

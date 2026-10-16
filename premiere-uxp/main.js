@@ -28,7 +28,7 @@
           ? "Premiere reads the transcripts it has (Text panel > Transcribe)."
           : "This Premiere Pro has no transcript scripting (25.6 or later)."
     );
-    if (status.last) set("last", "Last: " + status.last);
+    set("last", status.last ? (status.connected ? "Last: " : "") + status.last : "");
   }
 
   let version = "";

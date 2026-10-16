@@ -63,6 +63,18 @@ test("Premiere's transcript becomes timed segments, sentences and words", () => 
   ]);
 });
 
+test("a transcript as Premiere Pro 26.2 exported it (Transcript.exportToJSON)", () => {
+  // Our own clip (Juno, "I asked for a quiet room."), transcribed by
+  // Premiere's Speech to Text with speaker labeling and read through
+  // NOLGIA Transcripts in the proof run of 2026-10-16.
+  const raw = fs.readFileSync(path.join(__dirname, "fixtures", "premiere-transcript-26.2.json"), "utf8");
+  const t = tx.normalizePremiere(raw);
+  assert.equal(t.timing, "words");
+  assert.deepEqual(t.segments, [{ start: 5.08, end: 7, text: "I asked for a quiet room.", speaker: "Speaker 1" }]);
+  assert.deepEqual(tx.sentencesFrom(t.words, t.segments), [{ start: 5.08, end: 7, text: "I asked for a quiet room.", speaker: "Speaker 1" }]);
+  assert.deepEqual(t.words.map((w) => w.text), ["I", "asked", "for", "a", "quiet", "room."]);
+});
+
 test("times in ticks and plain text segments are read too", () => {
   const ticks = 254016000000;
   const t = tx.normalizePremiere({ segments: [{ startTime: 2 * ticks, endTime: 4.5 * ticks, text: "Hello there." }] });

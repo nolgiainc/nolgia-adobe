@@ -1,0 +1,73 @@
+{
+ "language": "en-us",
+ "segments": [
+  {
+   "duration": 1.92,
+   "language": "en-us",
+   "speaker": "7e131dd6-11b3-4e12-ab55-3edab66e3f14",
+   "start": 5.08,
+   "words": [
+    {
+     "confidence": 0.9599999785423279,
+     "duration": 0.33,
+     "eos": false,
+     "start": 5.08,
+     "tags": [],
+     "text": "I",
+     "type": "word"
+    },
+    {
+     "confidence": 1,
+     "duration": 0.24,
+     "eos": false,
+     "start": 5.44,
+     "tags": [],
+     "text": "asked",
+     "type": "word"
+    },
+    {
+     "confidence": 1,
+     "duration": 0.16,
+     "eos": false,
+     "start": 5.68,
+     "tags": [],
+     "text": "for",
+     "type": "word"
+    },
+    {
+     "confidence": 1,
+     "duration": 0.12,
+     "eos": false,
+     "start": 5.84,
+     "tags": [],
+     "text": "a",
+     "type": "word"
+    },
+    {
+     "confidence": 1,
+     "duration": 0.28,
+     "eos": false,
+     "start": 5.96,
+     "tags": [],
+     "text": "quiet",
+     "type": "word"
+    },
+    {
+     "confidence": 1,
+     "duration": 0.72,
+     "eos": true,
+     "start": 6.28,
+     "tags": [],
+     "text": "room.",
+     "type": "word"
+    }
+   ]
+  }
+ ],
+ "speakers": [
+  {
+   "id": "7e131dd6-11b3-4e12-ab55-3edab66e3f14",
+   "name": "Speaker 1"
+  }
+ ]
+}

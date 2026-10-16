@@ -366,7 +366,7 @@ function normalizePremiere(raw) {
       const duration = seconds(first(w, ["duration", "Duration"]));
       if (end === null && start !== null && duration !== null) end = start + duration;
       const type = String(first(w, ["type", "Type"]) || "").toLowerCase();
-      words.push({ text, start, end, punctuation: type === "punctuation" });
+      words.push({ text, start, end, punctuation: type === "punctuation", eos: w.eos === true });
     }
     let start = seconds(first(seg, ["start", "startTime", "start_time", "Start"]));
     let end = seconds(first(seg, ["end", "endTime", "end_time", "End"]));
@@ -388,7 +388,13 @@ function normalizePremiere(raw) {
     out.push(entry);
     for (const w of words) {
       if (w.start === null || !w.text.trim()) continue;
-      allWords.push({ start: round3(w.start), end: round3(w.end !== null ? w.end : w.start), text: w.text.trim(), punctuation: w.punctuation || undefined });
+      allWords.push({
+        start: round3(w.start),
+        end: round3(w.end !== null ? w.end : w.start),
+        text: w.text.trim(),
+        punctuation: w.punctuation || undefined,
+        eos: w.eos || undefined,
+      });
     }
   }
   const language = first(data, ["language", "Language", "languageCode", "locale"]);
@@ -417,9 +423,10 @@ function sentencesFrom(words, segments) {
     }
     current = [];
   };
+  // A sentence ends at . ! or ?, or where Premiere marks one (eos).
   for (const w of words) {
     current.push(w);
-    if (/[.!?]["'”’)]*$/.test(w.text)) flush();
+    if (w.eos || /[.!?]["'”’)]*$/.test(w.text)) flush();
   }
   flush();
   return out;
