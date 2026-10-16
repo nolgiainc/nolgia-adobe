@@ -147,10 +147,24 @@ function fakePremiere(clips, api = "26.5") {
   };
 }
 
+// The helper as main.js makes it, reading the link file from `dir`.
+function makeHelper(ppro, dir, premiereVersion) {
+  const helper = new Helper({
+    ppro,
+    fetch: (url, o) => fetch(url, o),
+    readLink: async () => JSON.parse(fs.readFileSync(path.join(dir, tx.LINK_FILE), "utf8")),
+    premiereVersion,
+    sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 50))),
+  });
+  helper.anyPort = true;
+  return helper;
+}
+
 async function linkWithHelper(ppro, { premiereVersion = "26.5.0" } = {}) {
-  const link = new tx.HelperLink({ ports: [0] });
+  const dir = support.tempDir();
+  const link = new tx.HelperLink({ ports: [0], dir });
   const port = await link.start();
-  const helper = new Helper({ ppro, fetch: (url, o) => fetch(url, o), premiereVersion, ports: [port], sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 50))) });
+  const helper = makeHelper(ppro, dir, premiereVersion);
   helper.loop();
   await support.until(() => link.connected, 5, "helper connected");
   return { link, helper, port, stop: () => { helper.stopped = true; link.stop(); } };
@@ -198,7 +212,7 @@ test("before 26.5 Premiere's transcripts are read, not made", async () => {
   }
 });
 
-function raw(port, { host, header = "1", body = "{}" } = {}) {
+function raw(port, { host, header = null, body = "{}" } = {}) {
   return new Promise((resolve, reject) => {
     const req = http.request(
       { host: "127.0.0.1", port, path: tx.HELPER_PATH + "/poll", method: "POST", headers: Object.assign({ Host: host || "127.0.0.1:" + port }, header ? { "X-NOLGIA-Helper": header } : {}) },
@@ -212,15 +226,35 @@ function raw(port, { host, header = "1", body = "{}" } = {}) {
   });
 }
 
-test("the local link answers only the helper", async () => {
-  const link = new tx.HelperLink({ ports: [0] });
+test("the local link answers only the helper: this session's secret, a 127.0.0.1 Host", async () => {
+  const dir = support.tempDir();
+  const link = new tx.HelperLink({ ports: [0], dir });
   const port = await link.start();
+  const file = JSON.parse(fs.readFileSync(path.join(dir, tx.LINK_FILE), "utf8"));
+  assert.equal(file.port, port);
+  assert.equal(file.secret, link.secret);
+  assert.ok(file.secret.length >= 48);
   try {
-    assert.equal(await raw(port, { header: null }), 403, "a web page cannot set the header without a preflight");
-    assert.equal(await raw(port, { host: "evil.example:" + port }), 403, "a DNS-rebound page has its own Host");
-    assert.equal(link.connected, false);
+    assert.equal(link.server.address().address, "127.0.0.1", "never on another interface");
+    assert.equal(await raw(port, {}), 403, "no secret");
+    assert.equal(await raw(port, { header: "1" }), 403, "not the secret");
+    assert.equal(await raw(port, { header: file.secret.slice(0, -1) + "x" }), 403, "a near miss");
+    assert.equal(await raw(port, { header: file.secret, host: "evil.example:" + port }), 403, "a DNS-rebound page has its own Host");
+    assert.equal(link.connected, false, "none of these counts as the helper");
+    assert.equal(await raw(port, { header: file.secret, body: JSON.stringify({ wait: 0 }) }), 200, "the helper itself");
   } finally {
     link.stop();
+  }
+  assert.ok(!fs.existsSync(path.join(dir, tx.LINK_FILE)), "the file goes with the link");
+  await assert.rejects(raw(port, { header: file.secret }), "the listener is closed");
+  // A new session has a new secret: the old one is refused.
+  const again = new tx.HelperLink({ ports: [0], dir });
+  const port2 = await again.start();
+  try {
+    assert.notEqual(again.secret, file.secret);
+    assert.equal(await raw(port2, { header: file.secret }), 403);
+  } finally {
+    again.stop();
   }
 });
 
@@ -275,10 +309,13 @@ test("transcribe: Premiere's transcript where it has one, NOLGIA's for the rest 
   ];
   const ppro = fakePremiere([{ name: "A.mp4", path: "/S/A.mp4", transcript: PREMIERE_JSON }, { name: "B.mp4", path: "/S/B.mp4" }], "26.3");
   const host = premiereHost(clips);
-  const ctl = new Controller(host, { environ: { NOLGIA_TOKEN: support.TOKEN, NOLGIA_API_URL: server.base, NOLGIA_TRANSCRIPTS_PORTS: "0" } });
+  const ctl = new Controller(host, {
+    environ: { NOLGIA_TOKEN: support.TOKEN, NOLGIA_API_URL: server.base, NOLGIA_BRIDGE_AUTOCONNECT: "1", NOLGIA_TRANSCRIPTS_PORTS: "0" },
+  });
+  assert.equal(ctl.helper, undefined, "no link before NOLGIA is connected");
   ctl.start();
   await support.until(() => ctl.helper && ctl.helper.port, 5, "link up");
-  const helper = new Helper({ ppro, fetch: (url, o) => fetch(url, o), premiereVersion: "26.3.0", ports: [ctl.helper.port] });
+  const helper = makeHelper(ppro, ctl.dir, "26.3.0");
   helper.loop();
   const { ApiClient } = require("../core/api");
   const api = new ApiClient({ baseUrl: server.base, token: support.TOKEN });
@@ -324,6 +361,11 @@ test("transcribe: Premiere's transcript where it has one, NOLGIA's for the rest 
     const priced = await ctl.do_transcribe(command({ clips: ["A.mp4"], engine: "nolgia" }), api);
     assert.deepEqual(priced.needs_credits, { clips: 1, minutes: 0.4, credits: 1, clip_names: ["A.mp4"] });
     assert.deepEqual(priced.transcripts, []);
+
+    // Switching NOLGIA off closes the link and removes its file.
+    ctl.disconnect();
+    await support.until(() => !ctl.helper, 5, "link closed");
+    assert.ok(!fs.existsSync(path.join(ctl.dir, tx.LINK_FILE)));
   } finally {
     helper.stopped = true;
     ctl.shutdown();

@@ -6,7 +6,9 @@
 // scripting, and NOLGIA for Premiere Pro is a CEP extension, so this small
 // UXP plugin does that one job for it: it long-polls the NOLGIA service on
 // 127.0.0.1 (core/transcribe.js, HelperLink) for a job, runs it in Premiere
-// and posts the answer back. It never talks to anything else.
+// and posts the answer back. It never talks to anything else. The port and
+// the session's secret come from the link file the service writes while it
+// is connected (readLink); without it, nothing is sent.
 //
 // The logic is here, apart from the UXP glue in main.js, so it runs under
 // Node in the tests with a stand-in for require("premierepro").
@@ -30,15 +32,16 @@ function has(obj, name) {
 }
 
 class Helper {
-  constructor({ ppro, fetch, premiereVersion = "", ports = PORTS, sleep = null, log = () => {}, onStatus = () => {} }) {
+  constructor({ ppro, fetch, readLink, premiereVersion = "", sleep = null, log = () => {}, onStatus = () => {} }) {
     this.ppro = ppro;
-    this.ports = ports;
+    this.readLink = readLink;
+    this.link = null;
     this.fetch = fetch;
     this.premiereVersion = premiereVersion;
     this.sleep = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.log = log;
     this.onStatus = onStatus;
-    this.port = null;
+    this.anyPort = false; // tests: the link may be on any port
     this.stopped = false;
     this.status = { connected: false, text: "Looking for NOLGIA for Premiere Pro...", last: "" };
   }
@@ -68,52 +71,64 @@ class Helper {
 
   // ------------------------------------------------------------ the link
 
-  async post(port, urlPath, body, timeoutMs) {
-    const res = await this.fetch("http://127.0.0.1:" + port + urlPath, {
+  async post(link, urlPath, body) {
+    const res = await this.fetch("http://127.0.0.1:" + link.port + urlPath, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-NOLGIA-Helper": "1" },
+      headers: { "Content-Type": "application/json", "X-NOLGIA-Helper": link.secret },
       body: JSON.stringify(body),
-      timeoutMs,
     });
     if (res.status !== 200) throw new Error("HTTP " + res.status);
     return res.json();
+  }
+
+  // The port and secret the service wrote, or null. Only ports this plugin
+  // may reach (manifest.json) are used.
+  async currentLink() {
+    let link = null;
+    try {
+      link = await this.readLink();
+    } catch (e) {
+      link = null;
+    }
+    if (!link || (!PORTS.includes(Number(link.port)) && !this.anyPort)) return null;
+    if (typeof link.secret !== "string" || link.secret.length < 16) return null;
+    return { port: Number(link.port), secret: link.secret };
   }
 
   // Poll forever: take a job, run it, answer, poll again.
   async loop() {
     let misses = 0;
     while (!this.stopped) {
-      const ports = this.port ? [this.port].concat(this.ports.filter((p) => p !== this.port)) : this.ports;
       let answered = false;
-      for (const port of ports) {
+      const link = this.link || (await this.currentLink());
+      if (link) {
         let reply;
         try {
-          reply = await this.post(port, POLL_PATH, { info: this.info(), wait: POLL_WAIT }, (POLL_WAIT + 15) * 1000);
+          reply = await this.post(link, POLL_PATH, { info: this.info(), wait: POLL_WAIT });
+          answered = true;
         } catch (e) {
-          continue;
+          this.link = null; // read the file again: a new session has a new secret
         }
-        answered = true;
-        misses = 0;
-        if (this.port !== port || !this.status.connected) {
-          this.port = port;
-          this.setStatus({ connected: true, text: "Connected to NOLGIA for Premiere Pro." });
-        }
-        if (reply && reply.job) {
-          const answer = await this.handle(reply.job);
-          try {
-            await this.post(port, RESULT_PATH, Object.assign({ id: reply.job.id }, answer), 30000);
-          } catch (e) {
-            this.log("Could not send the answer: " + e.message);
+        if (answered) {
+          this.link = link;
+          misses = 0;
+          if (!this.status.connected) this.setStatus({ connected: true, text: "Connected to NOLGIA for Premiere Pro." });
+          if (reply && reply.job) {
+            const answer = await this.handle(reply.job);
+            try {
+              await this.post(link, RESULT_PATH, Object.assign({ id: reply.job.id }, answer));
+            } catch (e) {
+              this.log("Could not send the answer: " + e.message);
+            }
           }
         }
-        break;
       }
       if (!answered) {
         misses += 1;
         if (this.status.connected || misses === 1) {
           this.setStatus({
             connected: false,
-            text: "Waiting for NOLGIA for Premiere Pro (open Window > Extensions > NOLGIA once).",
+            text: "Waiting for NOLGIA for Premiere Pro to be connected (Window > Extensions > NOLGIA).",
           });
         }
         await this.sleep(Math.min(10000, 2000 * misses));

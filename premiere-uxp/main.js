@@ -38,9 +38,35 @@
     version = "";
   }
 
+  // The link file NOLGIA for Premiere Pro writes while it is connected:
+  // %APPDATA%\NOLGIA\adobe\premiere (Windows) or ~/Library/Application
+  // Support/NOLGIA/adobe/premiere (macOS).
+  async function appDataFolder() {
+    const lfs = uxp.storage.localFileSystem;
+    try {
+      const os = require("os");
+      const home = String(os.homedir()).replace(/\\/g, "/").replace(/\/$/, "");
+      if (home) return os.platform() === "darwin" ? home + "/Library/Application Support" : home + "/AppData/Roaming";
+    } catch (e) {
+      // no os module: use where UXP keeps this plugin's data, inside the same folder
+    }
+    const data = String((await lfs.getDataFolder()).nativePath).replace(/\\/g, "/");
+    const at = data.indexOf("/Adobe/UXP/");
+    if (at < 0) throw new Error("cannot find the app data folder from " + data);
+    return data.slice(0, at);
+  }
+
+  async function readLink() {
+    const file = (await appDataFolder()) + "/NOLGIA/adobe/premiere/transcripts-link.json";
+    const lfs = uxp.storage.localFileSystem;
+    const entry = await lfs.getEntryWithUrl("file:" + (file.startsWith("/") ? "" : "/") + file);
+    return JSON.parse(await entry.read());
+  }
+
   const helper = new HelperClass({
     ppro,
     fetch: (url, options) => fetch(url, options),
+    readLink,
     premiereVersion: version,
     log: (text) => console.log("NOLGIA Transcripts: " + text),
     onStatus: render,

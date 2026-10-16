@@ -202,7 +202,6 @@ class Controller {
   // After the app starts: reconnect when the person left it on.
   start() {
     this.applyEnv();
-    this.startHelper();
     const wanted = envFlag(this.env, "NOLGIA_BRIDGE_AUTOCONNECT") || this.settings.get("connected");
     if (wanted && this.signedIn) this.connect();
     else if (this.settings.get("connected")) this.settings.set({ connected: false });
@@ -257,6 +256,7 @@ class Controller {
     const worker = this.worker;
     worker.finished.wait().then(() => this.workerDone(worker));
     this.settings.set({ connected: true });
+    this.startHelper();
     if (!this.accountEmail()) this.fetchEmail(api);
     this.log("Connecting to " + api.baseUrl + " as instance " + this.lease.instanceId + ".");
     this.startSnapshots();
@@ -296,6 +296,7 @@ class Controller {
 
   workerDone(worker) {
     if (this.worker !== worker) return;
+    if (!this.wantConnect) this.stopHelper();
     if (this.lease) {
       this.lease.release();
       this.lease = null;
@@ -609,8 +610,15 @@ class Controller {
   // ---- transcribe (Premiere Pro)
 
   // The local link NOLGIA Transcripts (the UXP helper) connects to. Only in
-  // Premiere Pro; NOLGIA_TRANSCRIPTS=0 leaves it off, and
-  // NOLGIA_TRANSCRIPTS_PORTS (comma separated) picks other ports.
+  // Premiere Pro and only while connected; NOLGIA_TRANSCRIPTS=0 leaves it
+  // off, and NOLGIA_TRANSCRIPTS_PORTS (comma separated) picks other ports.
+  stopHelper() {
+    if (!this.helper) return;
+    this.helper.stop();
+    this.helper = null;
+    this.bump();
+  }
+
   startHelper() {
     if (this.app.app !== "premiere" || this.helper || envFlag(this.env, "NOLGIA_TRANSCRIPTS") === false) return;
     const ports = String(this.env.NOLGIA_TRANSCRIPTS_PORTS || "")
@@ -618,7 +626,7 @@ class Controller {
       .map((p) => p.trim())
       .filter((p) => /^\d+$/.test(p))
       .map(Number);
-    this.helper = new transcribe.HelperLink({ ports: ports.length ? ports : undefined, log: (t) => this.log(t) });
+    this.helper = new transcribe.HelperLink({ ports: ports.length ? ports : undefined, dir: this.dir, log: (t) => this.log(t) });
     this.helper.onChange = () => this.bump();
     this.helper.start().catch((e) => this.log("NOLGIA Transcripts link did not start: " + e.message));
   }
@@ -1268,10 +1276,7 @@ class Controller {
   shutdown() {
     this.cancelSignIn();
     this.stopSnapshots();
-    if (this.helper) {
-      this.helper.stop();
-      this.helper = null;
-    }
+    this.stopHelper();
     const worker = this.worker;
     if (worker) {
       this.closedReason = this.app.name + " is closing.";

@@ -58,9 +58,19 @@ class TranscribeError extends Error {
 
 // The service side of the link to NOLGIA Transcripts. Jobs wait in a queue;
 // the helper's poll takes the next one, and its answer settles the job.
+//
+// The link listens on 127.0.0.1 only, and only while NOLGIA is connected in
+// Premiere. Each start makes a new secret, written with the port to
+// LINK_FILE in the plugin's settings folder (readable only by the person);
+// every request must carry it in X-NOLGIA-Helper, and the file goes when the
+// link stops.
+const LINK_FILE = "transcripts-link.json";
+
 class HelperLink {
-  constructor({ ports = HELPER_PORTS, log = () => {}, clock = () => Date.now() / 1000 } = {}) {
+  constructor({ ports = HELPER_PORTS, dir = null, log = () => {}, clock = () => Date.now() / 1000 } = {}) {
     this.ports = ports;
+    this.dir = dir;
+    this.secret = null;
     this.log = log;
     this.clock = clock;
     this.server = null;
@@ -77,6 +87,7 @@ class HelperLink {
   // Listen on the first free port. Resolves the port, or null when none is
   // free (the command then says so; nothing else breaks).
   async start() {
+    this.secret = crypto.randomBytes(24).toString("hex");
     for (const port of this.ports) {
       const server = http.createServer((req, res) => this.handle(req, res));
       const ok = await new Promise((resolve) => {
@@ -86,6 +97,7 @@ class HelperLink {
       if (ok) {
         this.server = server;
         this.port = server.address().port; // port 0 (tests) picks a free one
+        this.writeLinkFile();
         this.log("Waiting for NOLGIA Transcripts on 127.0.0.1:" + this.port + ".");
         return this.port;
       }
@@ -99,7 +111,31 @@ class HelperLink {
     return null;
   }
 
+  get linkFile() {
+    return this.dir ? path.join(this.dir, LINK_FILE) : null;
+  }
+
+  writeLinkFile() {
+    if (!this.linkFile) return;
+    fs.mkdirSync(this.dir, { recursive: true });
+    const tmp = this.linkFile + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify({ port: this.port, secret: this.secret, pid: process.pid }), { mode: 0o600 });
+    fs.renameSync(tmp, this.linkFile);
+  }
+
+  removeLinkFile() {
+    if (!this.linkFile) return;
+    try {
+      const current = JSON.parse(fs.readFileSync(this.linkFile, "utf8"));
+      if (current.secret === this.secret) fs.unlinkSync(this.linkFile);
+    } catch (e) {
+      // already gone, or another Premiere's
+    }
+  }
+
   stop() {
+    this.removeLinkFile();
+    this.lastSeen = 0;
     if (this.waiter) this.answerPoll(null);
     for (const job of this.queue.concat(Array.from(this.pending.values()))) {
       job.reject(new TranscribeError("NOLGIA for Premiere Pro stopped before NOLGIA Transcripts answered."));
@@ -158,7 +194,7 @@ class HelperLink {
     // arrives with its own Host.
     const host = String(req.headers.host || "").toLowerCase();
     if (host !== "127.0.0.1:" + port && host !== "localhost:" + port) return send(res, 403, { error: "forbidden" });
-    if (req.headers["x-nolgia-helper"] !== "1") return send(res, 403, { error: "forbidden" });
+    if (!this.secretMatches(req.headers["x-nolgia-helper"])) return send(res, 403, { error: "forbidden" });
     if (req.method !== "POST") return send(res, 405, { error: "POST only" });
     readBody(req, MAX_HELPER_BODY)
       .then((body) => {
@@ -167,6 +203,13 @@ class HelperLink {
         send(res, 404, { error: "not found" });
       })
       .catch((err) => send(res, 400, { error: String((err && err.message) || err) }));
+  }
+
+  secretMatches(given) {
+    if (!this.secret || typeof given !== "string") return false;
+    const a = Buffer.from(given, "utf8");
+    const b = Buffer.from(this.secret, "utf8");
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
   }
 
   onPoll(body, req, res) {
@@ -522,6 +565,7 @@ class Jobs {
 
 module.exports = {
   HELPER_PORTS,
+  LINK_FILE,
   HELPER_PATH,
   POLL_WAIT,
   CREDITS_PER_MINUTE,
