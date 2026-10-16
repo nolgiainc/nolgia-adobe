@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 NOLGIA Inc
 //
-// Build the signed installer: adobe/dist/nolgia-adobe-<version>.zxp.
+// Build the signed installer: dist/nolgia-adobe-<version>.zxp.
 //
-//   node adobe/tools/build.js --zxpsigncmd /path/to/ZXPSignCmd[.exe]
+//   node tools/build.js --zxpsigncmd /path/to/ZXPSignCmd[.exe]
 //
 // It copies the extension's files into a staging folder, signs them with
 // Adobe's ZXPSignCmd (github.com/Adobe-CEP/CEP-Resources, ZXPSignCMD) and
 // verifies the result. Without --cert it makes a self-signed certificate
-// once and keeps it (and its password) in adobe/dist, which git ignores.
+// once and keeps it (and its password) in dist, which git ignores.
 // From WSL it runs a Windows ZXPSignCmd.exe with Windows paths. Adobe asks
 // to sign on the platform the package is installed on.
 //

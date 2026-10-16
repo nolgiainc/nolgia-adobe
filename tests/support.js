@@ -13,7 +13,7 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 
-const REPO = path.resolve(__dirname, "..", "..");
+const REPO = path.resolve(__dirname, ".."); // the extension is the repository's root
 const TOKEN = "unit-token";
 
 function python() {

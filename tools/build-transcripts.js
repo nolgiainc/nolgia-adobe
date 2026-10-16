@@ -3,9 +3,9 @@
 // Copyright (C) 2026 NOLGIA Inc
 //
 // Build NOLGIA Transcripts, the UXP part of NOLGIA for Premiere Pro:
-// adobe/dist/nolgia-premiere-transcripts-<version>.ccx.
+// dist/nolgia-premiere-transcripts-<version>.ccx.
 //
-//   node adobe/tools/build-transcripts.js [--out FILE]
+//   node tools/build-transcripts.js [--out FILE]
 //
 // A .ccx is a zip of the plugin folder with manifest.json at its root; Adobe's
 // installer takes it (double click, or UnifiedPluginInstallerAgent
