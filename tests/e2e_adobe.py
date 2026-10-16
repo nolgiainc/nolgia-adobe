@@ -5,7 +5,7 @@
 
 For each app (After Effects, Premiere Pro, Illustrator):
 
-1. Builds the signed zxp with adobe/tools/build.js (or takes --zxp) and
+1. Builds the signed zxp with tools/build.js (or takes --zxp) and
    installs it with Adobe's own installer (UnifiedPluginInstallerAgent),
    removing an installed copy first (the installer skips the same version).
 2. Points the plugin at the API in <user data>/NOLGIA/adobe/env.json:
@@ -19,9 +19,9 @@ For each app (After Effects, Premiere Pro, Illustrator):
 4. Closes the app's documents without saving and quits it.
 
 Usage (from WSL, on Windows with a Windows Python, or on macOS):
-    python3 adobe/tests/e2e_adobe.py --zxpsigncmd /path/ZXPSignCmd.exe
-    python3 adobe/tests/e2e_adobe.py --api prod --token-file ~/.config/nolgia/tokens.json
-    python3 adobe/tests/e2e_adobe.py --apps illustrator --workdir "/mnt/c/Users/me/Documents/NOLGIA e2e"
+    python3 tests/e2e_adobe.py --zxpsigncmd /path/ZXPSignCmd.exe
+    python3 tests/e2e_adobe.py --api prod --token-file ~/.config/nolgia/tokens.json
+    python3 tests/e2e_adobe.py --apps illustrator --workdir "/mnt/c/Users/me/Documents/NOLGIA e2e"
 
 The work folder must be one the apps can reach. On macOS the app dialogs are
 read and dismissed through System Events, which needs Accessibility access
@@ -52,7 +52,7 @@ import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ADOBE = os.path.dirname(HERE)
-REPO = os.path.dirname(ADOBE)
+REPO = ADOBE  # the extension is the repository's root
 sys.path.insert(0, os.path.join(REPO, "tools"))
 
 from mock_bridge_server import MockBridgeServer  # noqa: E402
