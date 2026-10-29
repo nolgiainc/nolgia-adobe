@@ -29,11 +29,11 @@ switches. Closing the panel does not disconnect.
    Adobe's own installer. On Windows:
 
    ```bat
-   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.2.zxp
+   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.3.zxp
    ```
 
    On macOS the same tool is
-   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.2.zxp`.
+   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.3.zxp`.
    The installer skips a version that is already installed: to reinstall the
    same version, remove it first (`/remove NOLGIA`). The package is signed, so
    no debug setting is needed.
@@ -288,7 +288,7 @@ keeps it in `dist` (ignored by git):
 
 ```sh
 node tools/build.js --zxpsigncmd /path/to/ZXPSignCmd.exe
-# dist/nolgia-adobe-0.2.2.zxp
+# dist/nolgia-adobe-0.2.3.zxp
 node tools/build-transcripts.js
 # dist/nolgia-premiere-transcripts-<version>.ccx (NOLGIA Transcripts, a plain zip;
 # build.js also puts it inside the .zxp, for the panel's Install transcripts)
@@ -331,8 +331,13 @@ down to Sign out. 0.2.2 fixes what that test found: the plugin reports the
 computer's own name (on a Mac the one in System Settings > General > About,
 not its network name) and its operating system, After Effects' version reads
 26.5 (build 89) instead of 26.5x89, an unsaved Illustrator document sends its
-name, and the sign in page names the app. 0.2.2 was tested on Windows with
-the unit tests; on macOS it waits for its re-test.
+name, and the sign in page names the app. 0.2.2 passed its macOS re-test on
+October 29, 2026 (macOS 26.6.2, After Effects 26.5.0 build 89, Premiere Pro
+26.5.2, Illustrator 30.8.2): the session reported the Mac's own name, macOS,
+"26.5 (build 89)" and Untitled-1, and the sign in page named each app. One
+gap it found: After Effects' `info` result still said "26.5x89". 0.2.3 makes
+the `info` result use the same label as the session (and the panel's start
+line in Activity), in all three apps; tested on Windows with the unit tests.
 
 DIT (the `dit` command kind running the NOLGIA CLI 0.3.1), on October 15,
 2026, against the real API through `POST /bridge/commands`: in Premiere Pro

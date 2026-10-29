@@ -17,7 +17,7 @@
   const core = (name) => require(path.join(root, "core", name));
   const { PLUGIN_VERSION, appInfo } = core("index.js");
   const { Controller } = core("controller.js");
-  const { jsLiteral } = core("util.js");
+  const { jsLiteral, appVersionLabel } = core("util.js");
   const { appDir } = core("settings.js");
 
   const env = CEP.hostEnvironment();
@@ -143,7 +143,7 @@
   CEP.listen("com.adobe.csxs.events.ApplicationBeforeQuit", stop);
 
   window.nolgia = controller; // for the curious, in the CEP debugger
-  log("NOLGIA " + PLUGIN_VERSION + " started in " + app.name + " " + env.appVersion + ".");
+  log("NOLGIA " + PLUGIN_VERSION + " started in " + app.name + " " + appVersionLabel(env.appVersion) + ".");
   loadHost().then(() => {
     controller.updateSnapshot().finally(() => controller.start());
   });
