@@ -78,6 +78,10 @@
     appLabel.textContent = s.app_name;
     statusText.textContent = s.status;
     dot.className = "dot " + dotClass(s);
+    // The panel redraws on every change: keep where the person scrolled
+    // Activity to (the page keeps its own place).
+    const oldList = main.querySelector(".activity");
+    const listTop = oldList ? oldList.scrollTop : 0;
     top.textContent = "";
     main.textContent = "";
 
@@ -175,6 +179,7 @@
       );
     }
     main.appendChild(list);
+    list.scrollTop = listTop;
 
     const foot = el("div", { class: "foot" }, [el("span", { text: "NOLGIA for " + s.app_name + " " + s.plugin_version })]);
     if (s.signed_in) foot.appendChild(button("Sign out", () => send("sign_out"), "small quiet"));
@@ -214,7 +219,11 @@
   let sentText = null; // {seq, text}: cleared from the box once NOLGIA takes it
   let shownThread = null;
   let shownExamples = null;
-  let threadRows = [];
+  // The thread follows new rows unless the person scrolled it themselves:
+  // `threadAuto` is where the panel last put it, `followNext` asks to follow
+  // after the person sends (as in NOLGIA for Photoshop).
+  let threadAuto = null;
+  let followNext = false;
 
   function openLink(url) {
     if (/^https:\/\//.test(String(url || ""))) CEP.openURL(url);
@@ -231,6 +240,7 @@
     if (!text.trim()) return;
     sendSeq += 1;
     sentText = { seq: sendSeq, text };
+    followNext = true;
     send("chat_send", { text, seq: sendSeq });
   }
 
@@ -293,7 +303,7 @@
       return box;
     }
     if (row.status === "pending") {
-      box.appendChild(el("div", { class: "text muted", text: row.queued ? "Waiting for a free turn..." : "Working..." }));
+      box.appendChild(el("div", { class: "text muted", text: row.queued ? "Waiting for its turn..." : "Working..." }));
       return box;
     }
     for (const block of row.blocks || []) {
@@ -310,7 +320,10 @@
           button(
             option.label,
             () => {
-              if (!state.chat_blocker && !(chatState() || {}).busy) send("chat_send", { text: option.label });
+              if (!state.chat_blocker && !(chatState() || {}).busy) {
+                followNext = true;
+                send("chat_send", { text: option.label });
+              }
             },
             "small"
           )
@@ -322,30 +335,32 @@
     return box;
   }
 
-  // The thread follows new messages unless the person scrolled up to read:
-  // their own message and a reply that just finished bring it back (a
-  // finished reply is read from its start).
+  // A finished reply is read from its start, anything else from the end; a
+  // person who scrolled the thread up stays where they are until they send.
   function renderThread(view) {
     const signature = JSON.stringify([view.hidden, view.rows]);
     if (signature === shownThread) return;
-    const before = new Set(threadRows.map((r) => r.id + ":" + r.status));
-    const atBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 24;
-    const keepTop = thread.scrollTop;
+    const before = thread.scrollTop;
+    const atEnd = before + thread.clientHeight >= thread.scrollHeight - 24;
+    const personScrolled = threadAuto !== null && Math.abs(before - threadAuto) > 4 && !atEnd;
+    const follow = followNext || !personScrolled;
+    followNext = false;
     thread.textContent = "";
     if (view.hidden) thread.appendChild(el("div", { class: "label", text: "Earlier messages are on nolgia.ai." }));
     for (const row of view.rows) thread.appendChild(messageNode(row, view));
     shownThread = signature;
-    threadRows = view.rows;
+    if (!follow) {
+      thread.scrollTop = before;
+      return;
+    }
     const newest = view.rows[view.rows.length - 1];
-    const fresh = newest && !before.has(newest.id + ":" + newest.status);
-    const finished = Boolean(newest && newest.role === "agent" && newest.status !== "pending");
-    if (!atBottom && !fresh) {
-      thread.scrollTop = keepTop;
-    } else if (fresh && finished && thread.lastChild) {
+    const fromStart = Boolean(newest && newest.role === "agent" && newest.status !== "pending");
+    if (fromStart && thread.lastChild) {
       thread.scrollTop += thread.lastChild.getBoundingClientRect().top - thread.getBoundingClientRect().top - 6;
     } else {
       thread.scrollTop = thread.scrollHeight;
     }
+    threadAuto = thread.scrollTop;
   }
 
   function renderChat(s) {

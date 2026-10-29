@@ -29,12 +29,13 @@ const { ApiError, Unauthorized, NetworkError } = require("./api");
 const { AGENT_URL, BILLING_URL } = require("./index");
 const { timers } = require("./util");
 
-// What a NOLGIA Agent turn costs, and the other way in: the person's own
-// rate when NOLGIA tells it (GET /agent/models for the Agent's brain), else
-// the lowest rate there is. NOLGIA Agent comes first: the work never needs
-// to leave NOLGIA.
-const COST_LINE = "NOLGIA Agent works right here, each turn from 10 credits. You can also use Claude, Cursor, Codex or another agent with NOLGIA connected.";
-const COST_LINE_RATE = "NOLGIA Agent works right here, each turn from {credits} credits on your model. You can also use Claude, Cursor, Codex or another agent with NOLGIA connected.";
+// The line under the chat box: NOLGIA Agent first (the work never needs to
+// leave NOLGIA), with what a turn costs on the person's own model (GET
+// /agent/models for the Agent's brain), or the lowest rate when NOLGIA does
+// not say; then the agents NOLGIA's MCP page documents (nolgia.ai/mcp:
+// Claude Code, Cursor and Codex). The same words as NOLGIA for Photoshop.
+const COST_LINE = "NOLGIA Agent works right here, each turn from 10 credits. You can also use Claude Code, Cursor, Codex or another agent with NOLGIA connected.";
+const COST_LINE_RATE = "NOLGIA Agent works right here, each turn from {credits} credits on your model. You can also use Claude Code, Cursor, Codex or another agent with NOLGIA connected.";
 
 const MAX_CHARS = 8000; // SubmitAgentMessageRequest.content
 const SESSION_NAME_MAX = 80;
@@ -643,7 +644,7 @@ class AgentChat {
     if (this.sending) working = "Sending...";
     else if (pending.length) {
       const row = pending[pending.length - 1];
-      if (row.queued) working = "Waiting for a free turn. Your other NOLGIA Agent chats are still running.";
+      if (row.queued) working = "Waiting for its turn. Your other NOLGIA Agent chats are still running.";
       else if (this._agentSleeping()) working = "Waking up NOLGIA Agent. This takes about a minute.";
       else working = "NOLGIA Agent is working. What it does in " + this.owner.app.name + " shows in Activity below.";
     }
