@@ -966,7 +966,10 @@ class Controller {
 
   async do_info(command) {
     const result = await this.hostOrFail("info", {}, command);
-    return Object.assign({ app: this.app.app }, result);
+    const info = Object.assign({ app: this.app.app }, result);
+    // The same label as the session's check in ("26.5 (build 89)", not After Effects' own "26.5x89").
+    if ("app_version" in info) info.app_version = util.appVersionLabel(info.app_version);
+    return info;
   }
 
   // ---- run
