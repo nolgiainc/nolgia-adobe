@@ -3,13 +3,15 @@
 //
 // The NOLGIA panel (Window > Extensions > NOLGIA). It only shows what the
 // invisible NOLGIA service reports and sends it the buttons you press; the
-// connection keeps running when the panel is closed.
+// connection, and a chat turn NOLGIA Agent is working on, keep running when
+// the panel is closed.
 
 /* global window, document */
 "use strict";
 
 (function () {
   const CEP = window.NolgiaCEP;
+  const top = document.getElementById("top");
   const main = document.getElementById("main");
   const statusText = document.getElementById("status");
   const dot = document.getElementById("dot");
@@ -76,6 +78,11 @@
     appLabel.textContent = s.app_name;
     statusText.textContent = s.status;
     dot.className = "dot " + dotClass(s);
+    // The panel redraws on every change: keep where the person scrolled
+    // Activity to (the page keeps its own place).
+    const oldList = main.querySelector(".activity");
+    const listTop = oldList ? oldList.scrollTop : 0;
+    top.textContent = "";
     main.textContent = "";
 
     for (const pending of s.approvals) {
@@ -100,11 +107,11 @@
           button("Deny", () => send("deny", { id: pending.id })),
         ]),
       ]);
-      main.appendChild(card);
+      top.appendChild(card);
     }
 
     if (s.login) {
-      main.appendChild(
+      top.appendChild(
         el("div", { class: "card" }, [
           el("div", { class: "label", text: "Your code" }),
           el("div", { class: "code", text: s.login.user_code || "..." }),
@@ -117,11 +124,11 @@
         ])
       );
     } else if (!s.signed_in) {
-      main.appendChild(el("div", { style: "margin-bottom:12px" }, [button("Sign in", () => send("sign_in"), "primary wide")]));
-      main.appendChild(
+      top.appendChild(el("div", { style: "margin-bottom:12px" }, [button("Sign in", () => send("sign_in"), "primary wide")]));
+      top.appendChild(
         el("div", {
           class: "message",
-          text: "Sign in to let your agent work in this " + s.app_name + " through NOLGIA. Your browser opens a NOLGIA page to approve it.",
+          text: "Sign in to tell NOLGIA Agent what to do in this " + s.app_name + ". Your browser opens a NOLGIA page to approve it.",
         })
       );
     } else {
@@ -172,10 +179,228 @@
       );
     }
     main.appendChild(list);
+    list.scrollTop = listTop;
 
     const foot = el("div", { class: "foot" }, [el("span", { text: "NOLGIA for " + s.app_name + " " + s.plugin_version })]);
     if (s.signed_in) foot.appendChild(button("Sign out", () => send("sign_out"), "small quiet"));
     main.appendChild(foot);
+
+    renderChat(s);
+  }
+
+  // ------------------------------------------------------------------ chat
+
+  // What the chat suggests before the first message: things this plugin and
+  // NOLGIA's workflows for the app do. A click puts one in the box.
+  const EXAMPLES = {
+    premiere: [
+      "Put my newest NOLGIA clip at the end of my timeline.",
+      "Sort the clips in my project into bins by camera and scene.",
+      "Install the Kodak Portra 400 look so I can pick it in Lumetri Color.",
+    ],
+    after_effects: [
+      "Add my newest NOLGIA image to this comp as a layer.",
+      "Make a new 1080p comp, 10 seconds long, with a centered title that says Coming Soon.",
+      "Export a still of the current frame to my NOLGIA library.",
+    ],
+    illustrator: [
+      "Vectorize my newest NOLGIA image into clean paths on a new artboard.",
+      "Make an abstract poster on a new artboard with shapes in my swatch colors.",
+      "Export this artboard as a PNG to my NOLGIA library.",
+    ],
+  };
+
+  const chatCard = document.getElementById("chat");
+  const input = document.getElementById("chat-input");
+  const thread = document.getElementById("chat-thread");
+  const $ = (id) => document.getElementById(id);
+  const showIf = (node, on) => node.classList.toggle("hidden", !on);
+  let sendSeq = 0;
+  let sentText = null; // {seq, text}: cleared from the box once NOLGIA takes it
+  let shownThread = null;
+  let shownExamples = null;
+  // The thread follows new rows unless the person scrolled it themselves:
+  // `threadAuto` is where the panel last put it, `followNext` asks to follow
+  // after the person sends (as in NOLGIA for Photoshop).
+  let threadAuto = null;
+  let followNext = false;
+
+  function openLink(url) {
+    if (/^https:\/\//.test(String(url || ""))) CEP.openURL(url);
+  }
+
+  function chatState() {
+    return (state && state.chat) || null;
+  }
+
+  function sendFromBox() {
+    const view = chatState();
+    if (!view || state.chat_blocker || view.busy) return;
+    const text = String(input.value || "");
+    if (!text.trim()) return;
+    sendSeq += 1;
+    sentText = { seq: sendSeq, text };
+    followNext = true;
+    send("chat_send", { text, seq: sendSeq });
+  }
+
+  $("chat-send").addEventListener("click", sendFromBox);
+  $("chat-stop").addEventListener("click", () => send("chat_stop"));
+  $("chat-new").addEventListener("click", () => send("chat_new"));
+  $("chat-fix").addEventListener("click", () => send("chat_fix"));
+  $("chat-open-web").addEventListener("click", () => {
+    const view = chatState();
+    if (view && view.sessionUrl) openLink(view.sessionUrl);
+  });
+  $("chat-notice-action").addEventListener("click", () => {
+    const view = chatState();
+    if (view && view.notice && view.notice.action) openLink(view.notice.action.url);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendFromBox();
+    }
+  });
+  input.addEventListener("focus", () => send("chat_wake"));
+
+  function renderExamples(app) {
+    if (shownExamples === app) return;
+    shownExamples = app;
+    const box = $("chat-examples");
+    box.textContent = "";
+    for (const text of EXAMPLES[app] || []) {
+      box.appendChild(
+        el("div", {
+          class: "example",
+          text,
+          onclick: () => {
+            input.value = text;
+            input.focus();
+          },
+        })
+      );
+    }
+  }
+
+  // One piece of a reply: text, bold text or a link.
+  function part(p) {
+    const node = el("span", { text: p.text });
+    if (p.bold) node.className = "bold";
+    if (p.href) {
+      node.className = "href";
+      node.title = p.href;
+      node.addEventListener("click", () => openLink(p.href));
+    }
+    return node;
+  }
+
+  function messageNode(row, view) {
+    const box = el("div", { class: "msg " + (row.role === "user" ? "user" : "agent") });
+    box.appendChild(el("div", { class: "who", text: row.role === "user" ? (row.background ? "Background work finished" : "You") : "NOLGIA Agent" }));
+    if (row.role === "user") {
+      box.appendChild(el("div", { class: "text", text: row.text }));
+      return box;
+    }
+    if (row.status === "pending") {
+      box.appendChild(el("div", { class: "text muted", text: row.queued ? "Waiting for its turn..." : "Working..." }));
+      return box;
+    }
+    for (const block of row.blocks || []) {
+      const node = el("div", { class: block.type === "li" ? "li" : "para" });
+      if (block.type === "li") node.appendChild(part({ text: "\u2022 " }));
+      for (const p of block.parts) node.appendChild(part(p));
+      box.appendChild(node);
+    }
+    if (row.failure) box.appendChild(el("div", { class: "para failure", text: row.failure }));
+    if (row.question && row.question.options.length) {
+      const options = el("div", { class: "options" });
+      for (const option of row.question.options) {
+        options.appendChild(
+          button(
+            option.label,
+            () => {
+              if (!state.chat_blocker && !(chatState() || {}).busy) {
+                followNext = true;
+                send("chat_send", { text: option.label });
+              }
+            },
+            "small"
+          )
+        );
+      }
+      box.appendChild(options);
+    }
+    if (row.credits !== null && row.status === "complete") box.appendChild(el("div", { class: "meta", text: row.credits + " credits" }));
+    return box;
+  }
+
+  // A finished reply is read from its start, anything else from the end; a
+  // person who scrolled the thread up stays where they are until they send.
+  function renderThread(view) {
+    const signature = JSON.stringify([view.hidden, view.rows]);
+    if (signature === shownThread) return;
+    const before = thread.scrollTop;
+    const atEnd = before + thread.clientHeight >= thread.scrollHeight - 24;
+    const personScrolled = threadAuto !== null && Math.abs(before - threadAuto) > 4 && !atEnd;
+    const follow = followNext || !personScrolled;
+    followNext = false;
+    thread.textContent = "";
+    if (view.hidden) thread.appendChild(el("div", { class: "label", text: "Earlier messages are on nolgia.ai." }));
+    for (const row of view.rows) thread.appendChild(messageNode(row, view));
+    shownThread = signature;
+    if (!follow) {
+      thread.scrollTop = before;
+      return;
+    }
+    const newest = view.rows[view.rows.length - 1];
+    const fromStart = Boolean(newest && newest.role === "agent" && newest.status !== "pending");
+    if (fromStart && thread.lastChild) {
+      thread.scrollTop += thread.lastChild.getBoundingClientRect().top - thread.getBoundingClientRect().top - 6;
+    } else {
+      thread.scrollTop = thread.scrollHeight;
+    }
+    threadAuto = thread.scrollTop;
+  }
+
+  function renderChat(s) {
+    const view = s.chat;
+    showIf(chatCard, Boolean(s.signed_in && !s.login && view));
+    if (!view || !s.signed_in || s.login) return;
+    const blocker = s.chat_blocker;
+    $("chat-lead").textContent = "Tell NOLGIA Agent what to do in this " + s.app_name + ". It works right here.";
+    renderExamples(s.app);
+    input.placeholder = "Ask NOLGIA Agent to make or change something in " + s.app_name;
+    showIf($("chat-intro"), view.empty && (view.loaded || Boolean(blocker)));
+    showIf($("chat-new"), !view.empty);
+    renderThread(view);
+    showIf(thread, view.rows.length > 0);
+
+    showIf($("chat-working"), Boolean(view.working));
+    $("chat-working").textContent = view.working || "";
+
+    const notice = view.notice;
+    showIf($("chat-notice"), Boolean(notice));
+    $("chat-notice-text").textContent = notice ? notice.text : "";
+    showIf($("chat-notice-action"), Boolean(notice && notice.action));
+    $("chat-notice-action").textContent = notice && notice.action ? notice.action.label : "";
+
+    showIf($("chat-blocker"), Boolean(blocker));
+    $("chat-blocker-text").textContent = blocker ? blocker.text : "";
+    $("chat-fix").textContent = blocker ? blocker.label : "";
+
+    // One message is one turn: the box waits while the Agent works.
+    const canSend = !blocker && !view.busy;
+    $("chat-send").disabled = !canSend;
+    $("chat-send").textContent = view.working === "Sending..." ? "Sending..." : "Send";
+    showIf($("chat-stop"), view.canStop);
+    showIf($("chat-open-web"), Boolean(view.sessionUrl));
+    $("chat-cost").textContent = view.costLine;
+
+    if (sentText && s.chat_accepted >= sentText.seq) {
+      if (input.value === sentText.text) input.value = "";
+      sentText = null;
+    }
   }
 
   CEP.listen(CEP.STATE_EVENT, (data) => {
