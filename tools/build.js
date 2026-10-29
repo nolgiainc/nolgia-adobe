@@ -120,6 +120,7 @@ function main() {
   const dist = path.join(ADOBE, "dist");
   fs.mkdirSync(dist, { recursive: true });
   const out = path.resolve(opts.out || path.join(dist, "nolgia-adobe-" + PLUGIN_VERSION + ".zxp"));
+  fs.mkdirSync(path.dirname(out), { recursive: true });
   const viaWindows = isWsl && /\.exe$/i.test(tool);
   const work = viaWindows ? path.join(windowsTemp(), "nolgia-zxp-" + process.pid) : dist;
   const stage = path.resolve(opts.stage || path.join(work, "stage"));
@@ -169,10 +170,14 @@ function main() {
   const sign = ["-sign", toTool(tool, stage), toTool(tool, signed), toTool(tool, certForTool), password];
   const tsa = opts.tsa || process.env.NOLGIA_ZXP_TSA;
   if (tsa) sign.push("-tsa", tsa);
-  console.log(run(tool, sign));
-  console.log(run(tool, ["-verify", toTool(tool, signed)]));
-  if (signed !== out) fs.copyFileSync(signed, out);
-  fs.rmSync(viaWindows ? work : stage, { recursive: true, force: true });
+  try {
+    console.log(run(tool, sign));
+    console.log(run(tool, ["-verify", toTool(tool, signed)]));
+    if (signed !== out) fs.copyFileSync(signed, out);
+  } finally {
+    // The Windows work folder holds a copy of the certificate: never leave it behind.
+    fs.rmSync(viaWindows ? work : stage, { recursive: true, force: true });
+  }
   console.log("Wrote " + out + " (" + fs.statSync(out).size + " bytes)");
 }
 

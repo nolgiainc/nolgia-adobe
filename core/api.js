@@ -236,6 +236,64 @@ class ApiClient {
     return this.request("POST", "/bridge/commands/" + encodeURIComponent(commandId) + "/result", body);
   }
 
+  // ------------------------------------------------------------------- agent
+  //
+  // The panel's chat goes to the person's NOLGIA Agent through the same
+  // routes nolgia.ai's chat uses: a message goes in, a pending reply row
+  // comes back, and the reply is read until it settles.
+
+  // GET /agent: the person's NOLGIA Agent, or null when none is set up (404).
+  async getAgent() {
+    try {
+      return (await this.request("GET", "/agent")).json() || null;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  // GET /agent/models: the brains and what a turn costs on each.
+  async listAgentModels() {
+    const data = (await this.request("GET", "/agent/models")).json() || {};
+    return Array.isArray(data.models) ? data.models : [];
+  }
+
+  // POST /agent/wake: start waking a sleeping agent early.
+  async wakeAgent() {
+    return (await this.request("POST", "/agent/wake")).json() || null;
+  }
+
+  // POST /agent/messages. Resolves {user_message_id, agent_message_id?, session_id, session?}.
+  async submitAgentMessage(body) {
+    return (await this.request("POST", "/agent/messages", body)).json() || {};
+  }
+
+  // GET /agent/messages: one session's transcript, oldest first.
+  async listAgentMessages(sessionId, { since = null, limit = 200 } = {}) {
+    const query = { session_id: sessionId, limit: String(limit) };
+    if (since) query.since = since;
+    const data = (await this.request("GET", "/agent/messages", undefined, { query })).json() || {};
+    return Array.isArray(data.messages) ? data.messages : [];
+  }
+
+  async getAgentMessage(messageId) {
+    return (await this.request("GET", "/agent/messages/" + encodeURIComponent(messageId))).json();
+  }
+
+  // POST /agent/sessions: a new chat, pinned to this app (`app`).
+  async createAgentSession(body) {
+    return (await this.request("POST", "/agent/sessions", body)).json() || {};
+  }
+
+  async getAgentSession(sessionId) {
+    return (await this.request("GET", "/agent/sessions/" + encodeURIComponent(sessionId))).json();
+  }
+
+  // POST /agent/sessions/{id}/interrupt: stop the session's running turn.
+  async interruptAgentSession(sessionId) {
+    return (await this.request("POST", "/agent/sessions/" + encodeURIComponent(sessionId) + "/interrupt")).json() || {};
+  }
+
   // ------------------------------------------------------------------ assets
 
   async getAsset(assetId) {

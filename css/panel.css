@@ -37,6 +37,9 @@
   box-sizing: border-box;
 }
 
+/* The panel scrolls as a whole (the page scrolls, as any page does), so
+   Activity and Sign out stay reachable however long the chat gets; the
+   thread and Activity also scroll on their own inside it. */
 html,
 body {
   margin: 0;
@@ -57,6 +60,22 @@ body {
 
 button {
   font: inherit;
+}
+
+/* Dark scroll bars, for the panel and the boxes that scroll inside it. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2c3446;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a4459;
 }
 
 .head {
@@ -144,6 +163,13 @@ button {
 }
 .button.quiet {
   background: transparent;
+}
+.button:disabled,
+.button.primary:disabled {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--faint);
+  cursor: default;
 }
 
 .row {
@@ -286,6 +312,8 @@ button {
 }
 .activity {
   list-style: none;
+  max-height: 220px;
+  overflow-y: auto;
   margin: 0 0 12px;
   padding: 0;
   border: 1px solid var(--line);
@@ -360,4 +388,139 @@ button {
 }
 .hidden {
   display: none !important;
+}
+
+/* The chat with NOLGIA Agent */
+.chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.chat-head .heading {
+  font-weight: 600;
+}
+.chat .lead {
+  margin-bottom: 6px;
+}
+.example {
+  padding: 7px 9px;
+  margin-top: 6px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  line-height: 1.4;
+  cursor: pointer;
+}
+.example:hover {
+  border-color: #3a4459;
+}
+.thread {
+  max-height: 360px;
+  overflow-y: auto;
+}
+.msg {
+  margin-top: 8px;
+  padding: 8px 9px;
+  border-radius: var(--radius);
+  user-select: text;
+}
+.msg.user {
+  background: var(--surface-2);
+  margin-left: 22px;
+}
+.msg.agent {
+  background: #0d1119;
+  border: 1px solid var(--line);
+}
+.msg .who {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+  margin-bottom: 4px;
+}
+.msg .text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg .muted {
+  color: var(--muted);
+}
+.msg .para {
+  margin-bottom: 6px;
+  word-break: break-word;
+}
+.msg .para:last-child {
+  margin-bottom: 0;
+}
+.msg .li {
+  padding-left: 10px;
+  margin-bottom: 4px;
+  word-break: break-word;
+}
+.msg .bold {
+  font-weight: 600;
+}
+.msg .failure {
+  color: var(--red);
+}
+.msg .meta {
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--faint);
+}
+.link,
+.msg .href {
+  color: var(--orange-hover);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.link {
+  margin-top: 8px;
+  font-size: 11px;
+}
+.options .button {
+  margin: 6px 6px 0 0;
+}
+.working {
+  margin-top: 8px;
+  color: var(--amber);
+}
+.notice {
+  margin-top: 8px;
+  padding: 8px 9px;
+  border-radius: var(--radius);
+  border: 1px solid var(--orange);
+  background: #1a1210;
+}
+.notice .button {
+  margin-top: 8px;
+}
+.chat-input {
+  display: block;
+  width: 100%;
+  height: 64px;
+  margin: 10px 0 0;
+  padding: 7px 8px;
+  resize: none;
+  border-radius: var(--radius);
+  border: 1px solid #2a3142;
+  background: #070910;
+  color: var(--text);
+  font: inherit;
+  user-select: text;
+}
+.chat-input:focus {
+  outline: none;
+  border-color: #3a4459;
+}
+.chat-buttons {
+  margin-top: 8px;
+}
+.cost {
+  margin-top: 8px;
+  color: var(--faint);
+  font-size: 11px;
 }

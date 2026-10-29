@@ -16,6 +16,9 @@
 //   host.convertImage(src, dest, {width, format, quality, background})
 //                             resolves {width, height}
 //   host.openURL(url), host.openPanel(), host.broadcast(state), host.log(text)
+//
+// The panel's chat with NOLGIA Agent (core/chat.js) lives here too, so a
+// turn keeps going when the panel is closed.
 
 "use strict";
 
@@ -25,15 +28,16 @@ const os = require("os");
 const path = require("path");
 
 const { PLUGIN_VERSION, appInfo } = require("./index");
-const { ApiClient, ApiError, NetworkError } = require("./api");
+const { ApiClient, ApiError, NetworkError, normalizeBaseUrl } = require("./api");
 const { DeviceLogin, LoginCancelled, LoginError } = require("./auth");
 const { ActivityLog, CommandError, STATUS_LABELS, validate, monotonic } = require("./commands");
 const { leaseInstanceId } = require("./instance");
-const { Settings, loadEnv, envFlag, appDir } = require("./settings");
+const { Settings, loadEnv, envFlag, appDir, readJson, writeJson } = require("./settings");
 const { BridgeWorker, Status } = require("./worker");
 const util = require("./util");
 const dit = require("./dit");
 const transcribe = require("./transcribe");
+const { AgentChat } = require("./chat");
 
 // Camera log variants of NOLGIA's color presets: "<slug>-<suffix>" is the same
 // look for footage in that log encoding (nolgia-api render/colorgrade).
@@ -101,6 +105,52 @@ class Controller {
     // Imports while nothing is saved yet stay where the person can find them.
     this.fallbackDir = path.join(host.documents || path.join(os.homedir(), "Documents"), "NOLGIA imports");
     this.hostReady = null;
+    this.chatAccepted = 0; // the panel's last send NOLGIA took (it clears the box)
+    this.chat = new AgentChat(this.chatOwner(), { clock });
+  }
+
+  // What the chat needs from the plugin. The instance id is the one the
+  // bridge session runs under, so a chat pinned to it reaches this window.
+  chatOwner() {
+    const ctl = this;
+    const file = path.join(this.dir, "chat.json");
+    return {
+      get app() {
+        return ctl.app;
+      },
+      get instanceId() {
+        return ctl.worker && ctl.lease ? ctl.lease.instanceId : null;
+      },
+      get apiUrl() {
+        return normalizeBaseUrl(ctl.apiUrl());
+      },
+      api() {
+        return new ApiClient({ baseUrl: ctl.apiUrl(), token: ctl.token(), userAgent: ctl.userAgent() });
+      },
+      accountEmail: () => this.accountEmail(),
+      // The chat each copy of the app is on, by instance id, next to the settings.
+      recall: (instanceId) => readJson(file)[instanceId] || null,
+      remember: (instanceId, value) => {
+        const all = readJson(file);
+        if (value) all[instanceId] = value;
+        else delete all[instanceId];
+        writeJson(file, all);
+      },
+      forgetAll: () => {
+        try {
+          fs.unlinkSync(file);
+        } catch (e) {
+          // nothing remembered
+        }
+      },
+      bump: () => this.bump(),
+      log: (text) => this.log(text),
+      authFailed: (text) => this.authFailed(text),
+    };
+  }
+
+  userAgent() {
+    return "nolgia-adobe/" + PLUGIN_VERSION + " (" + this.app.name + " " + (this.snapshot.app_version || "") + "; " + os.platform() + ")";
   }
 
   log(text) {
@@ -187,6 +237,9 @@ class Controller {
       ),
       document: this.snapshot.document,
       transcripts: this.app.app === "premiere" ? this.transcriptsState() : null,
+      chat: this.signedIn ? this.chat.view() : null,
+      chat_blocker: this.chatBlocker(),
+      chat_accepted: this.chatAccepted,
     };
   }
 
@@ -244,13 +297,7 @@ class Controller {
       return false;
     }
     this.lease = leaseInstanceId(this.dir, this.env.NOLGIA_INSTANCE_ID || null);
-    const api = new ApiClient({
-      baseUrl: this.apiUrl(),
-      token,
-      userAgent:
-        "nolgia-adobe/" + PLUGIN_VERSION + " (" + this.app.name + " " + (this.snapshot.app_version || "") + "; " +
-        os.platform() + ")",
-    });
+    const api = new ApiClient({ baseUrl: this.apiUrl(), token, userAgent: this.userAgent() });
     this.api = api;
     this.closedReason = null;
     this.updateSnapshotSoon();
@@ -273,6 +320,7 @@ class Controller {
     if (!this.accountEmail()) this.fetchEmail(api);
     this.log("Connecting to " + api.baseUrl + " as instance " + this.lease.instanceId + ".");
     this.startSnapshots();
+    this.chat.start();
     this.bump();
     return true;
   }
@@ -326,6 +374,7 @@ class Controller {
   authFailed(text) {
     if (this.envToken) this.envToken = null;
     else this.settings.set({ token: "", account_email: "" });
+    this.chat.reset({ forget: false });
     this.disconnect();
     this.message = text;
     this.bump();
@@ -393,12 +442,15 @@ class Controller {
       token_expires_at: Number(token.expiresAt || 0),
     });
     this.log("Signed in" + (token.email ? " as " + token.email : "") + ".");
+    this.chat.reset({ forget: false });
     this.connect();
   }
 
   signOut() {
     this.cancelSignIn();
     this.disconnect("You signed out of NOLGIA in " + this.app.name + " before this ran.");
+    this.chat.reset({ forget: false });
+    this.chat.owner.forgetAll(); // signing out forgets the chats on this computer
     this.envToken = null;
     this.settings.set({ token: "", account_email: "", token_expires_at: 0 });
     this.message = "Signed out.";
@@ -422,8 +474,54 @@ class Controller {
       this.installTranscripts();
     } else if (kind === "clear_activity") {
       this.activity.clear();
+    } else if (kind === "chat_send") {
+      this.chatSend(msg.text, msg.seq);
+    } else if (kind === "chat_stop") {
+      this.chat.stop();
+    } else if (kind === "chat_new") {
+      this.chat.newChat();
+    } else if (kind === "chat_fix") {
+      this.fixChatBlocker();
+    } else if (kind === "chat_wake") {
+      this.chat.wake();
     }
     this.bump();
+  }
+
+  // ------------------------------------------------------------------- chat
+
+  // A message from the panel's box. `seq` is the panel's own count: once
+  // NOLGIA takes the message, state().chat_accepted says so and the panel
+  // clears the box (a message NOLGIA did not take stays in it).
+  chatSend(text, seq) {
+    if (this.chatBlocker() || this.chat.busy) return;
+    this.chat.send(String(text || "")).then((sent) => {
+      if (sent && Number.isFinite(Number(seq))) {
+        this.chatAccepted = Number(seq);
+        this.bump();
+      }
+    });
+  }
+
+  // Why the chat cannot send right now, with the one click that fixes it,
+  // or null. NOLGIA Agent reaches this app only while it is connected and
+  // Allow NOLGIA Agent is on.
+  chatBlocker() {
+    if (!this.signedIn || this.login) return null;
+    if (!this.connected) {
+      return { kind: "connect", text: "Turn on Connected so NOLGIA Agent can work in this " + this.app.name + ".", label: "Turn on Connected" };
+    }
+    if (!this.settings.get("allow_agent")) {
+      return { kind: "allow_agent", text: "NOLGIA Agent can work here only while Allow NOLGIA Agent is on.", label: "Allow NOLGIA Agent" };
+    }
+    return null;
+  }
+
+  fixChatBlocker() {
+    const blocker = this.chatBlocker();
+    if (!blocker) return;
+    if (blocker.kind === "connect") this.connect();
+    else if (blocker.kind === "allow_agent") this.setSwitch("allow_agent", true);
   }
 
   setSwitch(name, value) {
@@ -1332,6 +1430,7 @@ class Controller {
 
   shutdown() {
     this.cancelSignIn();
+    this.chat.reset({ forget: false });
     this.stopSnapshots();
     this.stopHelper();
     const worker = this.worker;

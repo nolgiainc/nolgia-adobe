@@ -20,12 +20,21 @@ Under /v1:
                  GET /assets?project_id=&sort=&limit=&cursor= (ready assets; pages of `limit`)
   color presets  GET /color-presets, GET /color-presets/{slug}/cube (public, no token needed; a few
                  made-up presets with small 5-point cubes, not the real looks)
+  agent chat     GET /agent, GET /agent/models, POST /agent/wake, POST /agent/sessions (app pin), POST /agent/messages
+                 (session_id or new_session, steering), GET /agent/messages?session_id=&since=&limit=, GET /agent/messages/{id},
+                 GET /agent/sessions/{id}, POST /agent/sessions/{id}/interrupt (the shapes of
+                 nolgia-api agent_messages.go; replies are settled by the test, see below)
 Signed storage URLs (a bearer token is refused, as signed URLs would):
   PUT /storage/uploads/{upload_id}, GET /storage/assets/{asset_id}
 Test helpers (no auth):
   POST /mock/assets?filename=&content_type=[&project_id=]   raw body -> a ready asset
   GET  /mock/assets/{id}/bytes, GET /mock/state, POST /mock/reset,
   POST /mock/device/approve {user_code} | {"all": true}, POST /mock/device/deny
+  POST /mock/agent {provisioned?, sleep_state?, submit_error?: {status, title, detail, code},
+                    app_pin?: bool (POST /agent/sessions takes `app`), auto_reply?: text|null,
+                    model?: the Agent's brain (null: the default), models_error?: bool}
+  POST /mock/agent/reply {message_id?, content?, status?, error?, error_code?, question?, queued?}
+                    settles (or updates) a pending reply; without message_id, the newest pending one
 
 Run:  python3 tools/mock_bridge_server.py --port 8765 --token test-token
 """
@@ -172,6 +181,12 @@ class MockState:
             self.heartbeats = []
             self.results = []
             self.rate = collections.defaultdict(collections.deque)
+            self.agent = {"provisioned": True, "sleep_state": "awake", "submit_error": None,
+                          "app_pin": True, "auto_reply": None, "model": None, "models_error": False}
+            self.agent_sessions = {}
+            self.agent_messages = {}
+            self.agent_submits = []
+            self.agent_creates = []
             self.cond.notify_all()
 
     def add_token(self, token, email="test@nolgia.ai"):
@@ -1153,6 +1168,324 @@ def mock_asset_bytes(h, asset_id):
     return h._send(200, raw=data, content_type=ctype)
 
 
+# ------------------------------------------------------------------ agent chat
+#
+# agent_messages.go, simplified: one turn per session at a time (a steering
+# send behind a pending turn is recorded without a reply row and gets one
+# when that turn settles), replies settled by POST /mock/agent/reply (or at
+# once with auto_reply). No pod, no billing.
+
+AGENT_NEW_SESSION_FIELDS = ("name", "project_id", "preset_slug", "campaign")
+AGENT_APPS = APPS
+
+
+def agent_view(st, user_id):
+    stamp = rfc3339(now())
+    return {"id": str(uuid.uuid5(uuid.NAMESPACE_URL, "agent/" + user_id)), "name": "NOLGIA Agent",
+            "status": "running", "release_name": "cust-mock", "namespace": "cust-mock",
+            "gnosis_tenant_id": "mock", "chat_connected": True, "auto_provisioned": False,
+            "sleep_state": st.agent["sleep_state"], "model": st.agent["model"],
+            "created_at": stamp, "updated_at": stamp}
+
+
+def agent_session_view(st, s):
+    rows = [m for m in st.agent_messages.values() if m["session_id"] == s["id"]]
+    out = {"id": s["id"], "user_id": s["user_id"], "name": s["name"], "project_id": None,
+           "preset_slug": None, "campaign": None, "archived_at": None, "message_count": len(rows),
+           "last_message_at": rfc3339(max(m["created_at"] for m in rows)) if rows else None,
+           "created_at": rfc3339(s["created_at"]), "updated_at": rfc3339(s["created_at"])}
+    if s.get("app") is not None:
+        out["app"] = s["app"]
+    return out
+
+
+def agent_message_view(m):
+    out = {"id": m["id"], "role": m["role"], "content": m["content"], "status": m["status"],
+           "session_id": m["session_id"], "created_at": rfc3339(m["created_at"])}
+    for key in ("error", "error_code", "question", "user_message_id"):
+        if m.get(key) is not None:
+            out[key] = m[key]
+    if m.get("steering"):
+        out["steering"] = True
+    if m["role"] == "agent" and m["status"] == "pending" and m.get("queued"):
+        out["queued"] = True
+    if m["role"] == "agent" and m["status"] == "complete":
+        out["cost"] = {"credits": 10, "model": "claude-opus-5-5", "metered": False}
+    if m.get("completed_at") is not None:
+        out["completed_at"] = rfc3339(m["completed_at"])
+    return out
+
+
+def agent_pending(st, session_id):
+    for m in st.agent_messages.values():
+        if m["session_id"] == session_id and m["role"] == "agent" and m["status"] == "pending":
+            return m
+    return None
+
+
+def agent_row(st, user_id, session_id, role, content, **extra):
+    at = now()
+    while any(abs(m["created_at"] - at) < 2e-6 for m in st.agent_messages.values()):
+        at += 1e-5  # distinct microseconds keep `since` reads exact, as in Postgres
+    m = {"id": str(uuid.uuid4()), "user_id": user_id, "session_id": session_id, "role": role,
+         "content": content, "status": "complete" if role == "user" else "pending", "created_at": at,
+         "error": None, "error_code": None, "question": None, "user_message_id": None,
+         "steering": False, "queued": False, "completed_at": None}
+    m.update(extra)
+    st.agent_messages[m["id"]] = m
+    return m
+
+
+def agent_settle(st, m, status="complete", content="", **fields):
+    m.update(status=status, content=content if status == "complete" else "", completed_at=now())
+    for key in ("error", "error_code", "question"):
+        if key in fields:
+            m[key] = fields[key]
+    m["queued"] = False
+    # Steering messages queued behind it become the session's next turn.
+    waiting = sorted((u for u in st.agent_messages.values() if u["session_id"] == m["session_id"]
+                      and u["role"] == "user" and u["steering"] and u["created_at"] > m["created_at"]
+                      and not any(a["user_message_id"] == u["id"] for a in st.agent_messages.values())),
+                     key=lambda u: u["created_at"])
+    if waiting:
+        agent_row(st, m["user_id"], m["session_id"], "agent", "", user_message_id=waiting[-1]["id"])
+    st.cond.notify_all()
+
+
+@route("GET", r"/v1/agent")
+def get_agent(h):
+    user = h.user()
+    st = h.state
+    with st.cond:
+        if not st.agent["provisioned"]:
+            raise HttpError(404, "Not Found", "no agent is provisioned for this account")
+        return h._send(200, agent_view(st, user["user_id"]))
+
+
+# The brain catalogue as nolgia-api serves it (agent_models.go), rates as of 2026-10-29.
+AGENT_MODELS = [
+    {"model": "deepseek-v4-flash", "turn_credits": 10, "default": True},
+    {"model": "gemini-3.8-flash", "turn_credits": 25, "default": False},
+    {"model": "claude-opus-5-5", "turn_credits": 70, "default": False},
+]
+
+
+@route("GET", r"/v1/agent/models")
+def list_agent_models(h):
+    h.user()
+    if h.state.agent["models_error"]:
+        raise HttpError(500, "Internal Server Error", "agent model catalogue unavailable")
+    return h._send(200, {"models": AGENT_MODELS})
+
+
+@route("POST", r"/v1/agent/wake")
+def wake_agent(h):
+    user = h.user()
+    st = h.state
+    with st.cond:
+        if not st.agent["provisioned"]:
+            raise HttpError(404, "Not Found", "no agent is provisioned for this account")
+        if st.agent["sleep_state"] == "asleep":
+            st.agent["sleep_state"] = "waking"
+        return h._send(202, agent_view(st, user["user_id"]))
+
+
+@route("POST", r"/v1/agent/messages")
+def submit_agent_message(h):
+    user = h.user()
+    st = h.state
+    body = strict_json(h.raw_body, ("content", "attachments", "session_id", "new_session", "credit_ceiling", "steering"),
+                       types={"content": str, "session_id": str, "new_session": dict, "steering": bool})
+    with st.cond:
+        st.agent_submits.append(body)
+        if st.agent["submit_error"]:
+            e = st.agent["submit_error"]
+            raise HttpError(int(e.get("status", 500)), e.get("title", "Error"), e.get("detail", ""), e.get("code"))
+        content = (body.get("content") or "").strip()
+        if not content:
+            raise HttpError(400, "Bad Request", "content or attachments is required")
+        if len(body.get("content") or "") > 8000:
+            raise HttpError(400, "Bad Request", "content is limited to 8000 characters")
+        if not st.agent["provisioned"]:
+            raise HttpError(404, "Not Found", "no agent is provisioned for this account")
+        fresh = body.get("new_session")
+        if fresh is not None and body.get("session_id"):
+            raise HttpError(400, "Bad Request", "session_id and new_session are mutually exclusive")
+        created = None
+        if fresh is not None:
+            for key in fresh:
+                if key not in AGENT_NEW_SESSION_FIELDS:
+                    raise bad_request('invalid JSON request body: json: unknown field "%s"' % key)
+            name = (fresh.get("name") or " ".join(content.split()[:6])[:48] or "New chat")[:80]
+            created = {"id": str(uuid.uuid4()), "user_id": user["user_id"], "name": name,
+                       "created_at": now(), "app": None}
+            st.agent_sessions[created["id"]] = created
+            session_id = created["id"]
+        else:
+            session_id = body.get("session_id")
+            if session_id is None:
+                default = next((s for s in st.agent_sessions.values()
+                                if s["user_id"] == user["user_id"] and s.get("default")), None)
+                if default is None:
+                    default = {"id": str(uuid.uuid4()), "user_id": user["user_id"], "name": "Chat",
+                               "created_at": now(), "app": None, "default": True}
+                    st.agent_sessions[default["id"]] = default
+                session_id = default["id"]
+            s = st.agent_sessions.get(uuid_param(session_id, "session_id"))
+            if s is None or s["user_id"] != user["user_id"]:
+                raise HttpError(404, "Not Found", "session not found")
+        busy = agent_pending(st, session_id)
+        steering = bool(body.get("steering"))
+        if busy is not None:
+            if not steering:
+                return h._send(409, {"code": "session_busy", "pending_agent_message_id": busy["id"]})
+            row = agent_row(st, user["user_id"], session_id, "user", content, steering=True)
+            return h._send(202, {"user_message_id": row["id"], "session_id": session_id})
+        row = agent_row(st, user["user_id"], session_id, "user", content)
+        reply = agent_row(st, user["user_id"], session_id, "agent", "", user_message_id=row["id"])
+        if st.agent["auto_reply"] is not None:
+            agent_settle(st, reply, content=st.agent["auto_reply"])
+        out = {"user_message_id": row["id"], "agent_message_id": reply["id"], "session_id": session_id}
+        if created is not None:
+            out["session"] = agent_session_view(st, created)
+        return h._send(202, out)
+
+
+@route("POST", r"/v1/agent/sessions")
+def create_agent_session(h):
+    user = h.user()
+    st = h.state
+    with st.cond:
+        try:
+            st.agent_creates.append(json.loads(h.raw_body.decode("utf-8") or "null"))
+        except ValueError:
+            st.agent_creates.append(None)
+        allowed = AGENT_NEW_SESSION_FIELDS + (("app",) if st.agent["app_pin"] else ())
+        body = strict_json(h.raw_body, allowed, types={"name": str, "app": dict})
+        name = (body.get("name") or "").strip()
+        if not 1 <= len(name) <= 80:
+            raise bad_request("name must be 1 to 80 characters")
+        app = body.get("app")
+        if app is not None:
+            for key in app:
+                if key not in ("app", "instance_id"):
+                    raise bad_request('invalid JSON request body: json: unknown field "%s"' % key)
+            if app.get("app") not in AGENT_APPS:
+                raise bad_request("app.app must be one of " + ", ".join(AGENT_APPS))
+            instance = str(app.get("instance_id") or "").strip()
+            if not one_line_ok(instance, INSTANCE_ID_MAX) or not instance:
+                raise bad_request("app.instance_id must be 1 to %d characters on one line" % INSTANCE_ID_MAX)
+            app = {"app": app["app"], "instance_id": instance}
+        created = {"id": str(uuid.uuid4()), "user_id": user["user_id"], "name": name,
+                   "created_at": now(), "app": app}
+        st.agent_sessions[created["id"]] = created
+        return h._send(201, agent_session_view(st, created))
+
+
+@route("GET", r"/v1/agent/messages")
+def list_agent_messages(h):
+    user = h.user()
+    st = h.state
+    try:
+        limit = int(h.query.get("limit", 50))
+    except ValueError:
+        raise bad_request("Invalid format for parameter limit") from None
+    if not 1 <= limit <= 200:
+        raise bad_request("limit must be between 1 and 200")
+    session_id = h.query.get("session_id")
+    if session_id is not None:
+        session_id = uuid_param(session_id, "session_id")
+    since = h.query.get("since")
+    since_at = None
+    if since is not None:
+        # Go's time.Parse(RFC3339) takes any number of fraction digits;
+        # fromisoformat before Python 3.11 takes only 3 or 6.
+        m = re.match(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:\d\d)$", since)
+        if m is None:
+            raise bad_request("Invalid format for parameter since")
+        fraction = ((m.group(2) or "") + "000000")[:6]
+        zone = "+00:00" if m.group(3) == "Z" else m.group(3)
+        since_at = datetime.datetime.fromisoformat(m.group(1) + "." + fraction + zone)
+    # Compare at the microseconds the rows are served with, like Postgres.
+    at = lambda ts: datetime.datetime.fromtimestamp(ts, datetime.timezone.utc)
+    with st.cond:
+        rows = [m for m in st.agent_messages.values() if m["user_id"] == user["user_id"]
+                and (session_id is None or m["session_id"] == session_id)
+                and (since_at is None or at(m["created_at"]) > since_at)]
+        rows.sort(key=lambda m: (m["created_at"], m["id"]))
+        return h._send(200, {"messages": [agent_message_view(m) for m in rows[:limit]]})
+
+
+@route("GET", r"/v1/agent/messages/([^/]+)")
+def get_agent_message(h, message_id):
+    user = h.user()
+    st = h.state
+    with st.cond:
+        m = st.agent_messages.get(uuid_param(message_id))
+        if m is None or m["user_id"] != user["user_id"]:
+            raise HttpError(404, "Not Found", "agent message not found")
+        return h._send(200, agent_message_view(m))
+
+
+@route("GET", r"/v1/agent/sessions/([^/]+)")
+def get_agent_session(h, session_id):
+    user = h.user()
+    st = h.state
+    with st.cond:
+        s = st.agent_sessions.get(uuid_param(session_id))
+        if s is None or s["user_id"] != user["user_id"]:
+            raise HttpError(404, "Not Found", "session not found")
+        return h._send(200, agent_session_view(st, s))
+
+
+@route("POST", r"/v1/agent/sessions/([^/]+)/interrupt")
+def interrupt_agent_session(h, session_id):
+    user = h.user()
+    st = h.state
+    with st.cond:
+        s = st.agent_sessions.get(uuid_param(session_id))
+        if s is None or s["user_id"] != user["user_id"]:
+            raise HttpError(404, "Not Found", "session not found")
+        m = agent_pending(st, s["id"])
+        if m is not None:
+            m.update(status="interrupted", content="", completed_at=now(), queued=False,
+                     error="Stopped before it finished.")
+            st.cond.notify_all()
+        return h._send(200, {"status": m["status"] if m else "complete"})
+
+
+@route("POST", r"/mock/agent")
+def mock_agent(h):
+    body = h.json()
+    st = h.state
+    with st.cond:
+        for key in ("provisioned", "sleep_state", "submit_error", "app_pin", "auto_reply", "model", "models_error"):
+            if key in body:
+                st.agent[key] = body[key]
+    return h._send(204)
+
+
+@route("POST", r"/mock/agent/reply")
+def mock_agent_reply(h):
+    body = h.json()
+    st = h.state
+    with st.cond:
+        if body.get("message_id"):
+            m = st.agent_messages.get(body["message_id"])
+        else:
+            pending = sorted((m for m in st.agent_messages.values() if m["role"] == "agent" and m["status"] == "pending"),
+                             key=lambda m: m["created_at"])
+            m = pending[-1] if pending else None
+        if m is None:
+            raise HttpError(404, "Not Found", "no pending agent reply")
+        if body.get("queued") is not None and body.get("status") is None:
+            m["queued"] = bool(body["queued"])
+        else:
+            agent_settle(st, m, status=body.get("status") or "complete", content=body.get("content") or "",
+                         **{k: body[k] for k in ("error", "error_code", "question") if k in body})
+        return h._send(200, agent_message_view(m))
+
+
 @route("GET", r"/mock/state")
 def mock_state(h):
     st = h.state
@@ -1169,6 +1502,11 @@ def mock_state(h):
             "requests": list(st.requests),
             "transcripts": [{"asset_id": k, "language": v["language"], "credits": v["credits"]}
                             for k, v in st.transcripts.items()],
+            "agent_sessions": [agent_session_view(st, s) for s in st.agent_sessions.values()],
+            "agent_messages": [agent_message_view(m) for m in sorted(st.agent_messages.values(),
+                                                                      key=lambda m: (m["created_at"], m["id"]))],
+            "agent_submits": list(st.agent_submits),
+            "agent_creates": list(st.agent_creates),
         }
     return h._send(200, out)
 

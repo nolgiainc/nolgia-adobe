@@ -1,11 +1,14 @@
 # NOLGIA for After Effects, Premiere Pro and Illustrator
 
 NOLGIA's plugin for After Effects, Premiere Pro and Illustrator. It connects the app on your computer to
-NOLGIA, so your agent (Claude, Cursor, the NOLGIA Agent and others, through
-NOLGIA's MCP server) can look at your project, make changes in it, render
-previews and move files between the app and your NOLGIA library.
+NOLGIA, so NOLGIA Agent can look at your project, make changes in it, render
+previews and move files between the app and your NOLGIA library. Since 0.2.0
+the NOLGIA panel has a chat: type what you want done in the app and NOLGIA
+Agent does it right there. You can also use Claude, Cursor, Codex or another
+agent with NOLGIA connected, through NOLGIA's MCP server.
 
 ```
+the panel's chat -----------------> api.nolgia.ai --> your NOLGIA Agent (works in this app through the plugin)
 your agent --MCP--> mcp.nolgia.ai --> api.nolgia.ai <--(the plugin connects out)-- the app on your computer
 ```
 
@@ -26,11 +29,11 @@ switches. Closing the panel does not disconnect.
    Adobe's own installer. On Windows:
 
    ```bat
-   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.1.4.zxp
+   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.0.zxp
    ```
 
    On macOS the same tool is
-   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.1.4.zxp`.
+   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.0.zxp`.
    The installer skips a version that is already installed: to reinstall the
    same version, remove it first (`/remove NOLGIA`). The package is signed, so
    no debug setting is needed.
@@ -42,9 +45,10 @@ switches. Closing the panel does not disconnect.
    Window > UXP Plugins > NOLGIA Transcripts once.
 4. Click Sign in. Your browser opens a NOLGIA page; check that the code
    matches the one in the panel and approve it. Each app signs in on its own.
-5. Keep Connected on and ask your agent to work in the app. Each command shows
-   up in the Activity list. Click Pause (or turn Connected off) to stop at any
-   time.
+5. Keep Connected on and tell NOLGIA Agent what to do in the panel's chat
+   box. You can also ask Claude, Cursor, Codex or another agent with NOLGIA
+   connected. Each command shows up in the Activity list. Click Pause (or turn
+   Connected off) to stop at any time.
 
 Settings in the panel:
 
@@ -63,6 +67,44 @@ by you, next to a log of what the plugin did (`nolgia.log`, never the token).
 
 ExtendScript that NOLGIA runs runs on your computer with your permissions, like
 any script. Turn on Ask before running code if you want to see it first.
+
+## The chat in the panel
+
+The NOLGIA Agent card is a chat with your NOLGIA Agent: the same Agent and the
+same chats as nolgia.ai/agent. It works the same way as the chat in NOLGIA for
+Photoshop.
+
+- **Suggestions:** before your first message it suggests a few things to ask
+  in this app. A click puts one in the box.
+- **Pinned to this app:** your first message starts a chat pinned to this app
+  (`app` on `POST /agent/sessions`: `after_effects`, `premiere` or
+  `illustrator`, and the `instance_id` its connection runs under). So every
+  turn tells the Agent you are writing from this app and that your requests
+  are about it.
+  - On nolgia.ai the chat shows as the app's name and your first words.
+  - The panel remembers it, one chat per copy of the app (a second After
+    Effects keeps its own). New chat starts another.
+  - A chat that is not pinned to this copy is never used here.
+- **One message is one turn:** while the Agent works, the box waits ("NOLGIA
+  Agent is working"), and Stop ends the turn. What it does in the app shows
+  in the Activity list as usual. The reply comes back in the panel with what
+  the turn cost.
+- **Closing the panel:** the chat lives in NOLGIA's invisible part, with the
+  connection, so closing the panel does not stop a turn. Open the panel again
+  to read the reply.
+- **What it needs:** Connected and Allow NOLGIA Agent on, since the Agent
+  reaches this app through them. When one is off, the card says so, with one
+  button that turns it on.
+- **Cost:** the line under the box gives what a turn costs on your Agent's
+  model. It reads "NOLGIA Agent works right here, each turn from N credits on
+  your model", with N from `GET /agent/models` for the brain `GET /agent`
+  names. If NOLGIA doesn't say, it gives the lowest rate, from 10 credits.
+- **No Agent or no credits:** if your account has no NOLGIA Agent yet, or no
+  credits left, the card says so, with a link to nolgia.ai.
+- **Signing out** forgets the chats on this computer (`chat.json` next to
+  each app's settings).
+
+The chat uses the sign in the panel already has; it asks for nothing new.
 
 ## What your agent can do
 
@@ -246,7 +288,7 @@ keeps it in `dist` (ignored by git):
 
 ```sh
 node tools/build.js --zxpsigncmd /path/to/ZXPSignCmd.exe
-# dist/nolgia-adobe-0.1.4.zxp
+# dist/nolgia-adobe-0.2.0.zxp
 node tools/build-transcripts.js
 # dist/nolgia-premiere-transcripts-<version>.ccx (NOLGIA Transcripts, a plain zip;
 # build.js also puts it inside the .zxp, for the panel's Install transcripts)

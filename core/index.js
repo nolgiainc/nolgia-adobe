@@ -9,10 +9,14 @@
 
 "use strict";
 
-const PLUGIN_VERSION = "0.1.4";
+const PLUGIN_VERSION = "0.2.0";
 const DEFAULT_API_URL = "https://api.nolgia.ai/v1";
 const DEVICE_CLIENT_ID = "nolgia-adobe";
 const DEVICE_SCOPE = "bridge assets:read assets:write";
+
+// nolgia.ai pages the panel opens.
+const AGENT_URL = "https://nolgia.ai/agent";
+const BILLING_URL = "https://nolgia.ai/billing";
 
 // CEP host ids (HostEnvironment.appId) and the NOLGIA app id of each.
 const APPS = {
@@ -58,6 +62,8 @@ module.exports = {
   DEFAULT_API_URL,
   DEVICE_CLIENT_ID,
   DEVICE_SCOPE,
+  AGENT_URL,
+  BILLING_URL,
   APPS,
   appInfo,
 };
