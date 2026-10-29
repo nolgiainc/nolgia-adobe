@@ -32,10 +32,10 @@ const { timers } = require("./util");
 // The line under the chat box: NOLGIA Agent first (the work never needs to
 // leave NOLGIA), with what a turn costs on the person's own model (GET
 // /agent/models for the Agent's brain), or the lowest rate when NOLGIA does
-// not say; then the agents NOLGIA's MCP page documents (nolgia.ai/mcp:
-// Claude Code, Cursor and Codex). The same words as NOLGIA for Photoshop.
-const COST_LINE = "NOLGIA Agent works right here, each turn from 10 credits. You can also use Claude Code, Cursor, Codex or another agent with NOLGIA connected.";
-const COST_LINE_RATE = "NOLGIA Agent works right here, each turn from {credits} credits on your model. You can also use Claude Code, Cursor, Codex or another agent with NOLGIA connected.";
+// not say; then the familiar agents NOLGIA connects to (Claude, Cursor and
+// Codex; nolgia.ai/mcp has the setup).
+const COST_LINE = "NOLGIA Agent works right here, each turn from 10 credits. You can also use Claude, Cursor, Codex or another agent with NOLGIA connected.";
+const COST_LINE_RATE = "NOLGIA Agent works right here, each turn from {credits} credits on your model. You can also use Claude, Cursor, Codex or another agent with NOLGIA connected.";
 
 const MAX_CHARS = 8000; // SubmitAgentMessageRequest.content
 const SESSION_NAME_MAX = 80;
