@@ -261,7 +261,7 @@ test("Stop ends the running turn; only the newest reply's question takes answers
 test("the cost line puts NOLGIA Agent first, with this account's own turn rate", async () => {
   let chat = newChat(owner());
   await chat.start();
-  assert.equal(chat.view().costLine, "NOLGIA Agent works right here, each turn from 10 credits on your model. You can also use Claude Code, Cursor, Codex or another agent with NOLGIA connected.");
+  assert.equal(chat.view().costLine, "NOLGIA Agent works right here, each turn from 10 credits on your model. You can also use Claude, Cursor, Codex or another agent with NOLGIA connected.");
   await mockAgent({ model: "claude-opus-5-5" });
   chat = newChat(owner());
   await chat.start();

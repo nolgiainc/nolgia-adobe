@@ -4,8 +4,8 @@ NOLGIA's plugin for After Effects, Premiere Pro and Illustrator. It connects the
 NOLGIA, so NOLGIA Agent can look at your project, make changes in it, render
 previews and move files between the app and your NOLGIA library. Since 0.2.0
 the NOLGIA panel has a chat: type what you want done in the app and NOLGIA
-Agent does it right there. You can also use Claude Code, Cursor, Codex or
-another agent with NOLGIA connected, through NOLGIA's MCP server.
+Agent does it right there. You can also use Claude, Cursor, Codex or another
+agent with NOLGIA connected, through NOLGIA's MCP server.
 
 ```
 the panel's chat -----------------> api.nolgia.ai --> your NOLGIA Agent (works in this app through the plugin)
@@ -29,11 +29,11 @@ switches. Closing the panel does not disconnect.
    Adobe's own installer. On Windows:
 
    ```bat
-   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.0.zxp
+   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.1.zxp
    ```
 
    On macOS the same tool is
-   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.0.zxp`.
+   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.1.zxp`.
    The installer skips a version that is already installed: to reinstall the
    same version, remove it first (`/remove NOLGIA`). The package is signed, so
    no debug setting is needed.
@@ -46,8 +46,8 @@ switches. Closing the panel does not disconnect.
 4. Click Sign in. Your browser opens a NOLGIA page; check that the code
    matches the one in the panel and approve it. Each app signs in on its own.
 5. Keep Connected on and tell NOLGIA Agent what to do in the panel's chat
-   box. You can also ask Claude Code, Cursor, Codex or another agent with
-   NOLGIA connected. Each command shows up in the Activity list. Click Pause (or turn
+   box. You can also ask Claude, Cursor, Codex or another agent with NOLGIA
+   connected. Each command shows up in the Activity list. Click Pause (or turn
    Connected off) to stop at any time.
 
 Settings in the panel:
@@ -288,7 +288,7 @@ keeps it in `dist` (ignored by git):
 
 ```sh
 node tools/build.js --zxpsigncmd /path/to/ZXPSignCmd.exe
-# dist/nolgia-adobe-0.2.0.zxp
+# dist/nolgia-adobe-0.2.1.zxp
 node tools/build-transcripts.js
 # dist/nolgia-premiere-transcripts-<version>.ccx (NOLGIA Transcripts, a plain zip;
 # build.js also puts it inside the .zxp, for the panel's Install transcripts)
