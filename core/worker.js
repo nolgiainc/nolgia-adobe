@@ -16,12 +16,10 @@
 
 "use strict";
 
-const os = require("os");
-
 const { PLUGIN_VERSION } = require("./index");
 const { ApiError, NetworkError, Unauthorized } = require("./api");
 const { capabilitiesFor, Command, CommandError, resultBody, monotonic } = require("./commands");
-const { Backoff, Signal, timers } = require("./util");
+const { Backoff, Signal, computerName, osName, timers } = require("./util");
 
 // The API's limits on POST /bridge/sessions fields (characters).
 const MAX_VERSION = 64;
@@ -77,7 +75,11 @@ class BridgeWorker {
     this.onAuthFailed = onAuthFailed || (() => {});
     this.log = log || (() => {});
     this.heartbeatInterval = heartbeatInterval;
-    this.machineName = machineName !== null ? machineName : os.hostname();
+    this.machineName = machineName !== null ? machineName : computerName();
+    this.os = osName();
+    // An API from before sessions carried the OS refuses the field; then the
+    // plugin stops sending it rather than stop connecting.
+    this.sendOs = Boolean(this.os);
 
     this.sessionId = null;
     this.pollWait = 25;
@@ -161,7 +163,7 @@ class BridgeWorker {
     const doc = snap.document || {};
     const document = { name: String(doc.name || "").slice(0, MAX_DOCUMENT_NAME) };
     if (doc.path && String(doc.path).length <= MAX_DOCUMENT_PATH) document.path = String(doc.path);
-    return {
+    const body = {
       instance_id: this.instanceId,
       app: this.app.app,
       app_version: oneLine(snap.app_version, MAX_VERSION),
@@ -171,6 +173,8 @@ class BridgeWorker {
       capabilities: capabilitiesFor(this.app),
       allow_agent: snap.allow_agent === undefined ? true : Boolean(snap.allow_agent),
     };
+    if (this.sendOs) body.os = this.os;
+    return body;
   }
 
   authFailed(err) {
@@ -212,6 +216,10 @@ class BridgeWorker {
             break;
           }
           if (!(err instanceof ApiError) && !(err instanceof NetworkError)) throw err;
+          if (this.sendOs && err instanceof ApiError && err.status === 400 && String(err.detail).includes('"os"')) {
+            this.sendOs = false;
+            continue;
+          }
           const delay = err.retryAfter || backoff.next();
           this.setStatus(Status.RETRYING, this.retryText(err, delay));
           this.log(this.statusText);

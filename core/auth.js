@@ -36,7 +36,8 @@ class LoginCancelled extends LoginError {
 }
 
 class DevicePrompt {
-  constructor(data) {
+  constructor(data, client = null) {
+    this.client = client; // the app signing in, named on the approval page
     this.deviceCode = data.device_code;
     this.userCode = data.user_code;
     this.verificationUri = data.verification_uri;
@@ -45,15 +46,20 @@ class DevicePrompt {
     this.interval = Math.max(1, Number(data.interval) || 5);
   }
 
+  // The approval page, naming the app (client=), so the page says which NOLGIA
+  // plugin is signing in instead of the CLI's words.
   get openUrl() {
-    return this.verificationUriComplete || this.verificationUri;
+    const url = this.verificationUriComplete || this.verificationUri;
+    if (!this.client || !url || /[?&]client=/.test(url)) return url;
+    return url + (url.includes("?") ? "&" : "?") + "client=" + encodeURIComponent(this.client);
   }
 }
 
 class DeviceLogin {
-  constructor(api, { clientId = DEVICE_CLIENT_ID, scope = DEVICE_SCOPE, clock = () => Date.now() / 1000 } = {}) {
+  constructor(api, { clientId = DEVICE_CLIENT_ID, scope = DEVICE_SCOPE, clock = () => Date.now() / 1000, client = null } = {}) {
     this.api = api;
     this.clientId = clientId;
+    this.client = client;
     this.scope = scope;
     this.clock = clock;
     this.cancelled = new Signal();
@@ -69,7 +75,7 @@ class DeviceLogin {
       if (err instanceof ApiError) throw new LoginError("NOLGIA did not start the sign in: " + (err.detail || err.title));
       throw err;
     }
-    const prompt = new DevicePrompt(data || {});
+    const prompt = new DevicePrompt(data || {}, this.client);
     this.interval = prompt.interval;
     return prompt;
   }

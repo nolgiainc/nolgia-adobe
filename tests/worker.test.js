@@ -10,6 +10,8 @@ const { APPS, PLUGIN_VERSION } = require("../core/index");
 const { ApiClient } = require("../core/api");
 const { ActivityLog, CAPABILITIES, CommandError } = require("../core/commands");
 const { BridgeWorker, Status } = require("../core/worker");
+const util = require("../core/util");
+const { ApiError } = require("../core/api");
 
 const APP = APPS.AEFT;
 let server;
@@ -193,4 +195,38 @@ test("the NOLGIA Agent is refused when Allow NOLGIA Agent is off", async () => {
   await support.until(() => worker.state === Status.CONNECTED, 10);
   await assert.rejects(support.enqueue(server, "after_effects", "info", {}, { caller: "agent" }), /403/);
   await stopped(worker);
+});
+
+test("the payload names the operating system", () => {
+  const worker = makeWorker();
+  assert.equal(worker.payload().os, util.osName() || undefined);
+});
+
+// An API from before sessions carried the OS refuses the field as unknown;
+// the plugin then stops sending it instead of failing to connect.
+test("an API without the os field still connects", async () => {
+  const bodies = [];
+  const api = {
+    async registerSession(body) {
+      bodies.push(body);
+      if ("os" in body) throw new ApiError(400, { title: "Bad Request", detail: 'invalid JSON request body: json: unknown field "os"' });
+      return { id: "s-1", poll_wait_seconds: 1 };
+    },
+    async nextCommand() {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return null;
+    },
+    async deleteSession() {},
+  };
+  const worker = new BridgeWorker({
+    api, execute: async () => ({ ok: true, result: {} }), activity: new ActivityLog(), instanceId: "i", app: APP,
+    snapshot: () => ({ document: { name: "" }, app_version: "26.5x89", allow_agent: true }), machineName: "m",
+  });
+  workers.push(worker);
+  if (!worker.sendOs) return; // an operating system NOLGIA does not name: nothing to fall back from
+  worker.start();
+  await support.until(() => worker.state === Status.CONNECTED, 10, "connected");
+  assert.ok("os" in bodies[0]);
+  assert.ok(!("os" in bodies[bodies.length - 1]));
+  assert.equal(worker.sendOs, false);
 });

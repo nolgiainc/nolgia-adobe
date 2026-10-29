@@ -314,6 +314,8 @@ class Controller {
       log: (text) => this.log(text),
     }).start();
     const worker = this.worker;
+    // NOLGIA for Photoshop reads the computer's name from here (util.rememberComputerName).
+    util.rememberComputerName(worker.machineName, "nolgia-adobe " + PLUGIN_VERSION, path.join(this.host.userData, "NOLGIA"));
     worker.finished.wait().then(() => this.workerDone(worker));
     this.settings.set({ connected: true });
     this.startHelper();
@@ -385,7 +387,7 @@ class Controller {
   signIn() {
     if (this.login) return;
     this.message = "";
-    const login = new DeviceLogin(new ApiClient({ baseUrl: this.apiUrl() }), { clock: this.clock });
+    const login = new DeviceLogin(new ApiClient({ baseUrl: this.apiUrl() }), { clock: this.clock, client: this.app.app });
     const state = { login, prompt: null };
     this.login = state;
     this.bump();
@@ -573,7 +575,7 @@ class Controller {
     const snap = {
       document: out.result.document || { name: "" },
       dirty: out.result.dirty,
-      app_version: out.result.app_version || this.snapshot.app_version,
+      app_version: util.appVersionLabel(out.result.app_version) || this.snapshot.app_version,
       allow_agent: this.settings.get("allow_agent"),
     };
     const before = JSON.stringify([this.snapshot.document, this.snapshot.allow_agent]);

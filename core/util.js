@@ -5,6 +5,9 @@
 
 "use strict";
 
+const childProcess = require("child_process");
+const fs = require("fs");
+const os = require("os");
 const path = require("path");
 // Node's own timers, not the page's: in a CEP panel with mixed context the
 // global setTimeout is Chromium's, which a hidden page may throttle.
@@ -197,6 +200,79 @@ function jsLiteral(value) {
   return json.replace(/[\u007f-￿]/g, (ch) => "\\u" + ch.charCodeAt(0).toString(16).padStart(4, "0"));
 }
 
+// The computer's operating system as NOLGIA names it: "macos", "windows",
+// "linux", or "" for anything else.
+function osName(platform = process.platform) {
+  if (platform === "darwin") return "macos";
+  if (platform === "win32") return "windows";
+  if (platform === "linux") return "linux";
+  return "";
+}
+
+// The computer's own name, the one its owner knows it by. On a Mac that is the
+// Computer Name in System Settings > General > About ("Louie's MacBook Pro"),
+// read with scutil; the network name Node reports there
+// ("Louies-MacBook-Pro.local") is only the fallback, without ".local". On
+// Windows it is the computer name (DESKTOP-ABC123). Every NOLGIA plugin reports
+// the name this way, so NOLGIA Agent names one computer one way (the owner's
+// Mac test, 2026-10-29).
+function computerName({ platform = process.platform, scutil = scutilComputerName, hostname = os.hostname } = {}) {
+  if (platform === "darwin") {
+    const name = scutil();
+    if (name) return name;
+  }
+  let name = String(hostname() || "").trim();
+  if (name.toLowerCase().endsWith(".local")) name = name.slice(0, -".local".length);
+  return name;
+}
+
+function scutilComputerName() {
+  try {
+    const out = childProcess.execFileSync("/usr/sbin/scutil", ["--get", "ComputerName"], {
+      encoding: "utf8",
+      timeout: 3000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return String(out || "").trim();
+  } catch (e) {
+    return "";
+  }
+}
+
+// Keep the computer's name in <folder>/computer.json (<user data>/NOLGIA), for
+// NOLGIA for Photoshop: its sandbox cannot ask Windows for the computer's
+// name, so it reads the one the other NOLGIA plugins found. Best effort:
+// false when the file could not be written.
+function rememberComputerName(name, writer, folder) {
+  if (!name || !folder) return false;
+  const file = path.join(folder, "computer.json");
+  const data = { name, os: osName(), written_by: writer };
+  try {
+    const old = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (old && old.name === data.name && old.os === data.os && old.written_by === data.written_by) return true;
+  } catch (e) {
+    // no file yet, or not ours to read
+  }
+  try {
+    fs.mkdirSync(folder, { recursive: true });
+    const tmp = file + "." + process.pid + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(data) + "\n", "utf8");
+    fs.renameSync(tmp, file);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// The app's version as the panel reports it. After Effects says "26.5x89"
+// (version 26.5, build 89; the owner's Mac test, 2026-10-29); that reads
+// "26.5 (build 89)". Other versions pass through as they are.
+function appVersionLabel(raw) {
+  const text = String(raw || "").trim();
+  const m = /^(\d+(?:\.\d+)*)x(\d+)$/.exec(text);
+  return m ? m[1] + " (build " + m[2] + ")" : text;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => timers.setTimeout(resolve, ms));
 }
@@ -246,6 +322,10 @@ class Signal {
 }
 
 module.exports = {
+  osName,
+  computerName,
+  rememberComputerName,
+  appVersionLabel,
   parseTime,
   Backoff,
   cutText,
