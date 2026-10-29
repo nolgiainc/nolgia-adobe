@@ -26,6 +26,9 @@ test("sign in: code, approve in the browser, token", async () => {
   const prompt = await flow.start();
   assert.match(prompt.userCode, /^[A-Z]{4}-[A-Z]{4}$/);
   assert.ok(prompt.openUrl.includes("user_code=" + prompt.userCode));
+  // The page names the app signing in, never the CLI's words.
+  const named = new (require("../core/auth").DevicePrompt)({ device_code: "d", user_code: "ABCD-EFGH", verification_uri: "https://nolgia.ai/device", verification_uri_complete: "https://nolgia.ai/device?user_code=ABCD-EFGH" }, "after_effects");
+  assert.equal(named.openUrl, "https://nolgia.ai/device?user_code=ABCD-EFGH&client=after_effects");
   setTimeout(() => support.call(server, "POST", "/mock/device/approve", { user_code: prompt.userCode }, { token: null }), 300);
   const token = await flow.waitForToken(prompt);
   assert.match(token.accessToken, /^nol_mock_/);

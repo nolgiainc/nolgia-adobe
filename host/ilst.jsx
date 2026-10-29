@@ -42,8 +42,10 @@
   function documentInfo() {
     var d = doc(false);
     if (!d) return { name: "" };
+    // An unsaved document has its name ("Untitled-1") and no path; it used to
+    // report no name at all (the owner's Mac test, 2026-10-29).
     var path = savedPath(d);
-    return path ? { name: d.name, path: path } : { name: "" };
+    return path ? { name: d.name, path: path } : { name: d.name };
   }
 
   function round(v) {

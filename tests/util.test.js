@@ -77,3 +77,41 @@ test("Signal waits, times out and wakes", async () => {
   s.clear();
   assert.equal(s.isSet(), false);
 });
+
+// The owner's Mac test (2026-10-29): Photoshop said "louieknows's Mac", the
+// other plugins "Louies-MacBook-Pro.local"; the Mac is "Louie's MacBook Pro".
+test("computerName reads a Mac's Computer Name, else the network name without .local", () => {
+  const name = util.computerName({ platform: "darwin", scutil: () => "Louie’s MacBook Pro", hostname: () => "Louies-MacBook-Pro.local" });
+  assert.equal(name, "Louie’s MacBook Pro");
+  assert.equal(util.computerName({ platform: "darwin", scutil: () => "", hostname: () => "Louies-MacBook-Pro.local" }), "Louies-MacBook-Pro");
+  assert.equal(util.computerName({ platform: "win32", scutil: () => "never asked", hostname: () => "DESKTOP-ABC123" }), "DESKTOP-ABC123");
+});
+
+test("osName names the operating system the way the API does", () => {
+  assert.deepEqual(["darwin", "win32", "linux", "aix"].map(util.osName), ["macos", "windows", "linux", ""]);
+});
+
+test("appVersionLabel reads After Effects' 26.5x89 as 26.5 (build 89)", () => {
+  assert.equal(util.appVersionLabel("26.5x89"), "26.5 (build 89)");
+  assert.equal(util.appVersionLabel("26.5.2"), "26.5.2");
+  assert.equal(util.appVersionLabel("30.8.2"), "30.8.2");
+  assert.equal(util.appVersionLabel(""), "");
+  assert.equal(util.appVersionLabel(undefined), "");
+});
+
+test("rememberComputerName keeps the name for NOLGIA for Photoshop", () => {
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const folder = fs.mkdtempSync(path.join(os.tmpdir(), "nolgia-name-"));
+  try {
+    assert.equal(util.rememberComputerName("Ada's MacBook Pro", "nolgia-adobe 0.2.2", folder), true);
+    const data = JSON.parse(fs.readFileSync(path.join(folder, "computer.json"), "utf8"));
+    assert.equal(data.name, "Ada's MacBook Pro");
+    assert.equal(data.written_by, "nolgia-adobe 0.2.2");
+    assert.equal(data.os, util.osName());
+    assert.equal(util.rememberComputerName("", "nolgia-adobe 0.2.2", folder), false);
+  } finally {
+    fs.rmSync(folder, { recursive: true, force: true });
+  }
+});

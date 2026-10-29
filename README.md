@@ -29,11 +29,11 @@ switches. Closing the panel does not disconnect.
    Adobe's own installer. On Windows:
 
    ```bat
-   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.1.zxp
+   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.2.zxp
    ```
 
    On macOS the same tool is
-   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.1.zxp`.
+   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.2.zxp`.
    The installer skips a version that is already installed: to reinstall the
    same version, remove it first (`/remove NOLGIA`). The package is signed, so
    no debug setting is needed.
@@ -288,7 +288,7 @@ keeps it in `dist` (ignored by git):
 
 ```sh
 node tools/build.js --zxpsigncmd /path/to/ZXPSignCmd.exe
-# dist/nolgia-adobe-0.2.1.zxp
+# dist/nolgia-adobe-0.2.2.zxp
 node tools/build-transcripts.js
 # dist/nolgia-premiere-transcripts-<version>.ccx (NOLGIA Transcripts, a plain zip;
 # build.js also puts it inside the .zxp, for the panel's Install transcripts)
@@ -321,6 +321,18 @@ works), so the test quits it through the plugin with ExtendScript's
 `app.quit()` and skips the ask check there (see the test's docstring). The
 test's macOS support changed how it drives the apps on Windows too; it has
 not been run on Windows since.
+
+0.2.1 (the panel's chat) on macOS 26.6.2 (Apple silicon), on October 29,
+2026, in After Effects 26.5.0, Premiere Pro 26.5.2 and Illustrator 30.8.2
+against NOLGIA itself: installed over 0.1.3 with Adobe's installer, signed in
+and connected in each app, one live NOLGIA Agent turn from each panel's chat
+(70 credits each, the work done in the app), Activity and the panel scrolling
+down to Sign out. 0.2.2 fixes what that test found: the plugin reports the
+computer's own name (on a Mac the one in System Settings > General > About,
+not its network name) and its operating system, After Effects' version reads
+26.5 (build 89) instead of 26.5x89, an unsaved Illustrator document sends its
+name, and the sign in page names the app. 0.2.2 was tested on Windows with
+the unit tests; on macOS it waits for its re-test.
 
 DIT (the `dit` command kind running the NOLGIA CLI 0.3.1), on October 15,
 2026, against the real API through `POST /bridge/commands`: in Premiere Pro
