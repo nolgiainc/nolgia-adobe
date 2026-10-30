@@ -108,6 +108,7 @@ test("an offload shows the CLI's own plan and waits for Approve before copying",
     assert.equal(ctl.asked.length, 1);
     assert.match(ctl.asked[0].title, /copy 2 files \(2\.00 GB\)/);
     assert.ok(ctl.asked[0].lines.some((l) => l.includes("Nothing at a destination is replaced")));
+    assert.ok(ctl.asked[0].lines.every((l) => !/bytes/.test(l)), ctl.asked[0].lines.join("\n"));
     // A copy is not code: the panel shows it as plain text with its own note.
     assert.equal(ctl.asked[0].plain, true);
     assert.match(ctl.asked[0].note, /NOLGIA CLI does this on this computer/);
@@ -117,6 +118,13 @@ test("an offload shows the CLI's own plan and waits for Approve before copying",
     assert.ok(runs[0].includes("--dry-run"), "the plan comes from a dry run first");
     assert.ok(!runs[1].includes("--dry-run"), "the copy runs only after approval");
   });
+});
+
+test("sizes read as the CLI writes them, never as a byte count", () => {
+  // The owner's Mac test 4: the Premiere card said "(2 files, 601500 bytes)".
+  const cases = { 0: "0 B", 512: "512 B", 999: "999 B", 1000: "1.0 KB", 601500: "601.5 KB", 9300000: "9.3 MB",
+    999949999: "999.9 MB", 2000000000: "2.00 GB", 3210000000000: "3.21 TB" };
+  for (const [bytes, text] of Object.entries(cases)) assert.equal(dit.gb(Number(bytes)), text);
 });
 
 test("a denied offload never starts the copy", async () => {

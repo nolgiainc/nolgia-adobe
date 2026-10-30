@@ -29,11 +29,11 @@ switches. Closing the panel does not disconnect.
    Adobe's own installer. On Windows:
 
    ```bat
-   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.5.zxp
+   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.6.zxp
    ```
 
    On macOS the same tool is
-   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.5.zxp`.
+   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.6.zxp`.
    The installer skips a version that is already installed: to reinstall the
    same version, remove it first (`/remove NOLGIA`). The package is signed, so
    no debug setting is needed.
@@ -291,7 +291,7 @@ keeps it in `dist` (ignored by git):
 
 ```sh
 node tools/build.js --zxpsigncmd /path/to/ZXPSignCmd.exe
-# dist/nolgia-adobe-0.2.5.zxp
+# dist/nolgia-adobe-0.2.6.zxp
 node tools/build-transcripts.js
 # dist/nolgia-premiere-transcripts-<version>.ccx (NOLGIA Transcripts, a plain zip;
 # build.js also puts it inside the .zxp, for the panel's Install transcripts)
@@ -370,6 +370,24 @@ request showed, and approved a click 0.3 s after a request showed, a press
 at 0.3 s released at 1.5 s, and Return and Space after a click had left
 the button with focus; 0.2.5 moved nothing and approved none of these, and
 approved a click 1.5 s after the request showed. Not run in the apps.
+
+0.2.6 (from the owner's fourth Mac test):
+- A DIT plan's sizes read as the CLI writes them (601.5 KB, 9.3 MB), never
+  "601500 bytes": core/dit.js had no KB step.
+- nolgia.log's start line names the version and build the info command and
+  the session report ("After Effects 26.5 (build 89)"), from the app script,
+  not CEP's appVersion (no build).
+- Reconnecting: in the test, After Effects lost its connection on a broken
+  socket ("EPIPE") while macOS showed another Space, then was silent for 5
+  minutes and commands sent to it expired. The worker backed off up to 60 s
+  between tries, and on a Mac an app macOS does not show has its timers
+  slowed (App Nap), so a 60 s wait could take minutes. Now the first network
+  failure after a working connection is tried again at once on a new
+  connection; after that, network failures wait at most 10 s (NOLGIA's own
+  429 and 5xx still up to 60 s); a failed heartbeat's wait ends as soon as a
+  poll gets through; and a heartbeat that is due is also sent each time a
+  poll comes back, since a poll's answer is network input, which wakes the
+  app however slow its timers are.
 
 DIT (the `dit` command kind running the NOLGIA CLI 0.3.1), on October 15,
 2026, against the real API through `POST /bridge/commands`: in Premiere Pro

@@ -134,8 +134,13 @@
   CEP.listen("com.adobe.csxs.events.ApplicationBeforeQuit", stop);
 
   window.nolgia = controller; // for the curious, in the CEP debugger
-  log("NOLGIA " + PLUGIN_VERSION + " started in " + app.name + " " + appVersionLabel(env.appVersion) + ".");
   loadHost().then(() => {
-    controller.updateSnapshot().finally(() => controller.start());
+    controller.updateSnapshot().finally(() => {
+      // The version and build the info command and the session report (the
+      // app script's, "26.5 (build 89)"); CEP's appVersion has no build.
+      log("NOLGIA " + PLUGIN_VERSION + " started in " + app.name + " " +
+        (controller.snapshot.app_version || appVersionLabel(env.appVersion)) + ".");
+      controller.start();
+    });
   });
 })();

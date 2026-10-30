@@ -270,11 +270,15 @@ function parseJson(s) {
   }
 }
 
+// A size as the NOLGIA CLI writes it (human_bytes): 601.5 KB, 9.3 MB, never
+// "601500 bytes" (the owner's Mac test 4).
 function gb(bytes) {
   const b = Number(bytes) || 0;
+  if (b >= 1e12) return (b / 1e12).toFixed(2) + " TB";
   if (b >= 1e9) return (b / 1e9).toFixed(2) + " GB";
   if (b >= 1e6) return (b / 1e6).toFixed(1) + " MB";
-  return b + " bytes";
+  if (b >= 1e3) return (b / 1e3).toFixed(1) + " KB";
+  return Math.round(b) + " B";
 }
 
 // What the person approves: the CLI's own dry run, in plain lines.
@@ -428,4 +432,4 @@ class Jobs {
   }
 }
 
-module.exports = { validateArgs, writesMedia, argv, locateCli, planFor, trimResult, Jobs, DitError, INSTALL_HINT, SUBCOMMANDS };
+module.exports = { validateArgs, writesMedia, argv, locateCli, planFor, trimResult, Jobs, DitError, INSTALL_HINT, SUBCOMMANDS, gb };

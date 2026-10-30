@@ -230,3 +230,133 @@ test("an API without the os field still connects", async () => {
   assert.ok(!("os" in bodies[bodies.length - 1]));
   assert.equal(worker.sendOs, false);
 });
+
+// ---- reconnecting (the owner's Mac test 4: a broken socket, then 5 minutes silent)
+
+const net = require("node:net");
+
+/** A TCP relay in front of the mock that can break every open connection
+ *  ("EPIPE"/"ECONNRESET" on the plugin's side) or refuse new ones (an outage). */
+function relay(target) {
+  const url = new URL(target.root);
+  const sockets = new Set();
+  let refusing = false;
+  const srv = net.createServer((client) => {
+    if (refusing) {
+      client.destroy();
+      return;
+    }
+    const upstream = net.connect(Number(url.port), url.hostname);
+    for (const s of [client, upstream]) {
+      sockets.add(s);
+      s.on("error", () => {});
+      s.on("close", () => sockets.delete(s));
+    }
+    client.pipe(upstream).pipe(client);
+    client.on("close", () => upstream.destroy());
+    upstream.on("close", () => client.destroy());
+  });
+  return new Promise((resolve) => {
+    srv.listen(0, "127.0.0.1", () => {
+      const base = "http://127.0.0.1:" + srv.address().port + "/v1";
+      resolve({
+        base,
+        breakAll: () => {
+          for (const s of sockets) s.destroy();
+        },
+        outage: (on) => {
+          refusing = on;
+          if (on) for (const s of sockets) s.destroy();
+        },
+        close: () => {
+          for (const s of sockets) s.destroy();
+          srv.close();
+        },
+      });
+    });
+  });
+}
+
+function relayedWorker(base, networkRetryMax) {
+  const logs = [];
+  const worker = new BridgeWorker({
+    api: new ApiClient({ baseUrl: base, token: support.TOKEN }),
+    execute: async (command) => ({ ok: true, result: { kind: command.kind } }),
+    activity: new ActivityLog(),
+    instanceId: "relay-instance",
+    snapshot: () => ({ document: { name: "" }, app_version: "26.5x89", allow_agent: true }),
+    app: APP,
+    log: (text) => logs.push(text),
+    networkRetryMax,
+    machineName: "test-machine",
+  });
+  worker.logs = logs;
+  workers.push(worker);
+  return worker;
+}
+
+test("a connection that breaks mid-request is tried again at once", async () => {
+  const r = await relay(server);
+  try {
+    const worker = relayedWorker(r.base, 10).start();
+    await support.until(() => worker.state === Status.CONNECTED, 10, "connected");
+    const sid = worker.sessionId;
+    r.breakAll(); // the long poll and any heartbeat in flight break
+    const t0 = Date.now();
+    const id = await support.enqueue(server, "after_effects", "info");
+    const done = await support.waitCommand(server, id);
+    assert.equal(done.status, "succeeded");
+    assert.ok(Date.now() - t0 < 4000, "took " + (Date.now() - t0) + " ms");
+    assert.equal(worker.sessionId, sid);
+    await stopped(worker);
+  } finally {
+    r.close();
+  }
+});
+
+test("back within the retry limit once an outage ends, however long it was", async () => {
+  const r = await relay(server);
+  try {
+    const worker = relayedWorker(r.base, 2).start();
+    await support.until(() => worker.state === Status.CONNECTED, 10, "connected");
+    r.outage(true);
+    await support.until(() => worker.state === Status.RETRYING, 10, "retrying");
+    await util.sleep(9000); // long enough for the backoff to reach its limit (and well past 2 s without one)
+    r.outage(false);
+    const t0 = Date.now();
+    await support.until(() => worker.state === Status.CONNECTED, 10, "connected again");
+    const back = Date.now() - t0;
+    assert.ok(back <= 3500, "back after " + back + " ms");
+    const id = await support.enqueue(server, "after_effects", "info");
+    assert.equal((await support.waitCommand(server, id)).status, "succeeded");
+    assert.ok(worker.logs.some((l) => /Trying again in [12] s\./.test(l)), worker.logs.join("\n"));
+    await stopped(worker);
+  } finally {
+    r.close();
+  }
+});
+
+test("a heartbeat that is due goes out when a poll comes back, even if its timer is late", async () => {
+  const quick = await support.startMock(["--poll-wait-seconds", "1"]);
+  try {
+    const worker = new BridgeWorker({
+      api: new ApiClient({ baseUrl: quick.base, token: support.TOKEN }),
+      execute: async () => ({ ok: true, result: {} }),
+      activity: new ActivityLog(),
+      instanceId: "late-timer",
+      snapshot: () => ({ document: { name: "" }, app_version: "1", allow_agent: true }),
+      app: APP,
+      heartbeatInterval: 1000, // a timer that, as under App Nap, does not come in time
+      machineName: "m",
+    });
+    workers.push(worker);
+    worker.start();
+    await support.until(() => worker.state === Status.CONNECTED, 10, "connected");
+    const first = worker.lastHeartbeatAt;
+    worker.heartbeatInterval = 2; // due after 2 s; only a poll's answer can wake it now
+    await support.until(() => worker.lastHeartbeatAt > first, 8, "a heartbeat from a poll");
+    await stopped(worker);
+  } finally {
+    quick.stop();
+  }
+});
