@@ -33,6 +33,7 @@ const path = require("path");
 
 const ADOBE = path.resolve(__dirname, "..");
 const { PLUGIN_VERSION } = require(path.join(ADOBE, "core", "index.js"));
+const { checkVersions } = require(path.join(ADOBE, "tools", "versions.js"));
 
 // What goes into the package, relative to adobe/.
 const INCLUDE = ["CSXS", "core", "host", "js", "css", "fonts", "icons", "panel.html", "service.html", "LICENSE"];
@@ -112,6 +113,9 @@ function run(tool, args) {
 }
 
 function main() {
+  // Every place the version is written must agree, or the app script and
+  // the panel disagree and nothing runs (0.2.3).
+  checkVersions();
   const opts = parseArgs(process.argv.slice(2));
   const tool = opts.zxpsigncmd || process.env.ZXPSIGNCMD;
   if (!tool || !fs.existsSync(tool)) {

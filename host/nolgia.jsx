@@ -15,7 +15,7 @@
 
 $.global.__nolgia = (function () {
   var N = {};
-  N.version = "0.2.2";
+  N.version = "0.2.4";
   N.adapter = null;
   N.MAX_ITEMS = 10000;
   N.MAX_DEPTH = 32;

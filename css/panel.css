@@ -288,6 +288,19 @@ button {
 .approval pre.full {
   max-height: 420px;
 }
+.approval .plain {
+  margin: 0 0 10px;
+  max-height: 180px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.approval .plain.full {
+  max-height: 420px;
+}
 .approval .more {
   color: var(--muted);
   font-size: 11px;

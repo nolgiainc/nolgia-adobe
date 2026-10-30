@@ -231,6 +231,8 @@ class Controller {
         title: p.title,
         lines: p.lines,
         approve_label: p.approveLabel,
+        plain: p.plain,
+        note: p.note,
       })),
       activity: this.activity.list().map((item) =>
         Object.assign(item, { label: STATUS_LABELS[item.status] || item.status })
@@ -657,6 +659,10 @@ class Controller {
       title: request.title,
       lines: request.lines,
       approveLabel: request.approveLabel || "Approve",
+      // A request that is not code (a DIT copy, opening a project) shows as
+      // plain text with its own note, not as code that "runs in" the app.
+      plain: Boolean(request.plain),
+      note: request.note || null,
       settle: (decision, reason) => settle({ decision, reason }),
     };
     this.approvals.push(pending);
@@ -715,6 +721,8 @@ class Controller {
         title: command.requester + " wants to " + plan.title + " on this computer",
         lines: plan.lines,
         approveLabel: plan.approve,
+        plain: true,
+        note: "The NOLGIA CLI does this on this computer, with your permissions, only once you approve.",
       });
     }
     const job = this.ditJobs.start(cli, dit.argv(a));
@@ -1426,6 +1434,7 @@ class Controller {
           "This " + this.app.projectWord + " has unsaved changes. Opening the other one closes it and loses them.",
         ],
         approveLabel: "Open and lose changes",
+        plain: true,
       });
     }
     return this.hostOrFail("open", { path: target }, command);
