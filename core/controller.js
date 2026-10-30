@@ -472,8 +472,13 @@ class Controller {
     else if (kind === "set") this.setSwitch(msg.name, Boolean(msg.value));
     else if (kind === "pause") this.setSwitch("connected", !this.settings.get("connected"));
     else if (kind === "approve" || kind === "deny") {
+      // Only the panel's armed buttons send these, for the request they were drawn for.
       const pending = this.approvals.find((p) => p.id === msg.id);
+      const label = msg.label || (kind === "approve" ? (pending && pending.approveLabel) || "Approve" : "Deny");
+      this.log("The person clicked " + label + " for request " + msg.id + (pending ? "." : ", which was no longer waiting."));
       if (pending) pending.settle(kind === "approve" ? "approved" : "denied");
+    } else if (kind === "ignored_click") {
+      this.log("Ignored a click on " + (msg.label || "a request's button") + " for request " + msg.id + ": " + (msg.why || "not a deliberate click") + ".");
     } else if (kind === "install_transcripts") {
       this.installTranscripts();
     } else if (kind === "clear_activity") {

@@ -12,12 +12,68 @@
 (function () {
   const CEP = window.NolgiaCEP;
   const top = document.getElementById("top");
+  const requests = document.getElementById("requests");
   const main = document.getElementById("main");
   const statusText = document.getElementById("status");
   const dot = document.getElementById("dot");
   const appLabel = document.getElementById("app");
   let state = null;
   const expanded = new Set();
+
+  // A request is answered only by a deliberate click (the owner's Mac test
+  // 3, 2026-10-29: a request in the Resolve plugin was approved about 3 s
+  // after its window opened, with nobody clicking):
+  // - requests float over the top of the panel (#requests), so the panel
+  //   never moves under a click that is on its way;
+  // - each time a request shows, its buttons refuse clicks for ARM_MS (they
+  //   look off until then);
+  // - a click counts only when the pointer went down on that same button
+  //   after that, so a press from before never counts;
+  // - keys never answer: the buttons take no focus, and a click made from a
+  //   key carries no pointer press;
+  // - the answer goes to the request id the button was drawn for;
+  // - every answer and every refused click is logged with its request id.
+  const ARM_MS = 1000;
+  const shownAt = new Map(); // request id -> when its card first showed
+  let press = null; // {id, approve, at}
+  let armTimer = null;
+
+  function answerButton(pending, approve, armed) {
+    const label = approve ? pending.approve_label : "Deny";
+    const node = el("button", {
+      class: "button" + (approve ? " primary" : "") + (armed ? "" : " arming"),
+      text: label,
+      tabindex: "-1",
+    });
+    const early = () => Date.now() - (shownAt.has(pending.id) ? shownAt.get(pending.id) : Infinity) < ARM_MS;
+    const down = () => {
+      if (press && press.id === pending.id && press.approve === approve && Date.now() - press.at < 50) return;
+      press = { id: pending.id, approve, at: Date.now(), early: early() };
+      // A press before the buttons are on is logged now: the panel may redraw
+      // before its release, and then no click follows.
+      if (press.early) send("ignored_click", { id: pending.id, label, why: "the pointer went down on it before the request's buttons were on" });
+    };
+    node.addEventListener("pointerdown", down);
+    node.addEventListener("mousedown", (event) => {
+      down();
+      event.preventDefault(); // a click gives the button no focus, so no key reaches it
+    });
+    node.addEventListener("click", (event) => {
+      const p = press;
+      press = null;
+      let why = null;
+      if (p && p.id === pending.id && p.approve === approve && p.early) return; // logged at the press
+      if (early()) why = "it came before the request's buttons were on";
+      else if (!event.detail) why = "it did not come from the mouse";
+      else if (!p || p.id !== pending.id || p.approve !== approve) why = "the pointer did not go down on it";
+      if (why) {
+        send("ignored_click", { id: pending.id, label, why });
+        return;
+      }
+      send(approve ? "approve" : "deny", { id: pending.id, label });
+    });
+    return node;
+  }
 
   function send(action, extra) {
     CEP.dispatch(CEP.ACTION_EVENT, Object.assign({ action }, extra || {}));
@@ -83,9 +139,20 @@
     const oldList = main.querySelector(".activity");
     const listTop = oldList ? oldList.scrollTop : 0;
     top.textContent = "";
+    requests.textContent = "";
     main.textContent = "";
 
+    const now = Date.now();
+    const waiting = new Set(s.approvals.map((p) => p.id));
+    for (const id of Array.from(shownAt.keys())) if (!waiting.has(id)) shownAt.delete(id);
+    let nextArm = null;
     for (const pending of s.approvals) {
+      if (!shownAt.has(pending.id)) shownAt.set(pending.id, now);
+      const armed = now - shownAt.get(pending.id) >= ARM_MS;
+      if (!armed) {
+        const due = shownAt.get(pending.id) + ARM_MS - now;
+        nextArm = nextArm === null ? due : Math.min(nextArm, due);
+      }
       const full = expanded.has(pending.id);
       const lines = full ? pending.lines : pending.lines.slice(0, 12);
       // Code shows as code; a plain request (a DIT copy, opening a project)
@@ -110,12 +177,15 @@
             })
           : null,
         note ? el("div", { class: "note", text: note }) : null,
-        el("div", { class: "row" }, [
-          button(pending.approve_label, () => send("approve", { id: pending.id }), "primary"),
-          button("Deny", () => send("deny", { id: pending.id })),
-        ]),
+        el("div", { class: "row" }, [answerButton(pending, true, armed), answerButton(pending, false, armed)]),
       ]);
-      top.appendChild(card);
+      requests.appendChild(card);
+    }
+    if (nextArm !== null && armTimer === null) {
+      armTimer = window.setTimeout(() => {
+        armTimer = null;
+        render(); // the buttons turn on
+      }, nextArm + 20);
     }
 
     if (s.login) {

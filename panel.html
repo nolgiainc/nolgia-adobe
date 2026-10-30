@@ -13,6 +13,9 @@
     </div>
     <div class="status"><span class="dot" id="dot"></span><span id="status">NOLGIA is starting...</span></div>
     <div id="top"></div>
+    <!-- Requests waiting for an answer float over the top of the panel
+         (js/panel.js: they never push the panel down under a click). -->
+    <div class="requests" id="requests"></div>
     <!-- The chat is built once and updated in place, so the box keeps what
          you typed (and its focus) while the rest of the panel redraws. -->
     <div class="card chat hidden" id="chat">
