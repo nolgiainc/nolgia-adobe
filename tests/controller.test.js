@@ -358,6 +358,28 @@ test("save resolves paths next to the project; open over unsaved changes asks fi
   await finish(ctl);
 });
 
+test("every answer and every ignored click from the panel is logged with its request", async () => {
+  // The panel's buttons answer only a deliberate click (js/panel.js, the
+  // owner's Mac test 3); the service logs what it was sent.
+  const host = fakeHost({ run: () => ({ value: 1 }) });
+  const lines = [];
+  host.log = (text) => lines.push(text);
+  const ctl = await connected(controllerFor(host, { NOLGIA_ASK_BEFORE_RUN: "1" }));
+  const pending = command("run", { code: "1" });
+  await support.until(() => ctl.approvals.length === 1, 10, "approval");
+  const id = ctl.approvals[0].id;
+  ctl.action({ action: "ignored_click", id, label: "Run code", why: "it came before the request's buttons were on" });
+  assert.equal(ctl.approvals.length, 1, "an ignored click answers nothing");
+  ctl.action({ action: "approve", id: "some-other-request", label: "Run code" });
+  assert.equal(ctl.approvals.length, 1, "an answer for another request answers nothing");
+  ctl.action({ action: "approve", id, label: "Run code" });
+  assert.equal((await pending).status, "succeeded");
+  assert.ok(lines.includes("NOLGIA: Ignored a click on Run code for request " + id + ": it came before the request's buttons were on."), lines);
+  assert.ok(lines.includes("NOLGIA: The person clicked Run code for request some-other-request, which was no longer waiting."), lines);
+  assert.ok(lines.includes("NOLGIA: The person clicked Run code for request " + id + "."), lines);
+  await finish(ctl);
+});
+
 test("sign in with the device flow, then sign out", async () => {
   const host = fakeHost({}, "ILST");
   const ctl = new Controller(host, { environ: { NOLGIA_API_URL: server.base } });

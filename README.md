@@ -29,11 +29,11 @@ switches. Closing the panel does not disconnect.
    Adobe's own installer. On Windows:
 
    ```bat
-   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.4.zxp
+   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.5.zxp
    ```
 
    On macOS the same tool is
-   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.4.zxp`.
+   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.5.zxp`.
    The installer skips a version that is already installed: to reinstall the
    same version, remove it first (`/remove NOLGIA`). The package is signed, so
    no debug setting is needed.
@@ -58,6 +58,9 @@ Settings in the panel:
   only the agent apps you run yourself.
 - **Ask before running code**: show every script NOLGIA wants to run in the
   panel (it opens by itself) and wait for you to click Run code or Deny.
+  Only a click answers a request: its buttons turn on 1 second after it
+  shows, the pointer has to go down and up on the button after that, and no
+  key ever answers.
 - **Sign out**: disconnect and forget the sign in on this computer.
 
 The sign in and the switches are kept per app in
@@ -288,7 +291,7 @@ keeps it in `dist` (ignored by git):
 
 ```sh
 node tools/build.js --zxpsigncmd /path/to/ZXPSignCmd.exe
-# dist/nolgia-adobe-0.2.4.zxp
+# dist/nolgia-adobe-0.2.5.zxp
 node tools/build-transcripts.js
 # dist/nolgia-premiere-transcripts-<version>.ccx (NOLGIA Transcripts, a plain zip;
 # build.js also puts it inside the .zxp, for the panel's Install transcripts)
@@ -350,6 +353,23 @@ refuse a mismatch. The test also runs the panel's own call snippet
 version, change all six. 0.2.4 also shows a request that is not code (a DIT
 copy, opening another project) as plain text with its own note in the
 approval card, instead of as code that "runs in" the app.
+
+0.2.5 (from the owner's third Mac test, where a request in the Resolve
+plugin was approved about 3 s after its window opened, with nobody
+clicking): a request waiting for an answer floats over the top of the panel
+instead of pushing the panel's content down under a click that is on its
+way; its buttons look off and refuse clicks for 1 second each time it shows;
+a click counts only when the pointer went down on that same button after
+that; the buttons take no keyboard focus, so Return and Space never answer;
+the answer goes to the request the card was drawn for; and the service logs
+every answer and every refused click with its request. Checked with the
+unit tests and with the panel (panel.html, css/panel.css, js/panel.js) in
+headless Chromium, the engine CEP panels run on, driven by Playwright's real
+mouse and keyboard: 0.2.4 moved the chat's Send button 166 px down when a
+request showed, and approved a click 0.3 s after a request showed, a press
+at 0.3 s released at 1.5 s, and Return and Space after a click had left
+the button with focus; 0.2.5 moved nothing and approved none of these, and
+approved a click 1.5 s after the request showed. Not run in the apps.
 
 DIT (the `dit` command kind running the NOLGIA CLI 0.3.1), on October 15,
 2026, against the real API through `POST /bridge/commands`: in Premiere Pro
