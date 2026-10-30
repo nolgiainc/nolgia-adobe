@@ -88,9 +88,17 @@
     for (const pending of s.approvals) {
       const full = expanded.has(pending.id);
       const lines = full ? pending.lines : pending.lines.slice(0, 12);
+      // Code shows as code; a plain request (a DIT copy, opening a project)
+      // shows as text, with its own note.
+      const note = pending.plain
+        ? pending.note
+        : "Code runs in " + s.app_name + " on this computer, with your permissions.";
       const card = el("div", { class: "card approval" }, [
         el("div", { class: "title", text: pending.title }),
-        el("pre", { class: full ? "full" : "", text: lines.join("\n") }),
+        el(pending.plain ? "div" : "pre", {
+          class: (pending.plain ? "plain" : "") + (full ? " full" : ""),
+          text: lines.join("\n"),
+        }),
         pending.lines.length > 12 && !full
           ? el("div", {
               class: "more",
@@ -101,7 +109,7 @@
               },
             })
           : null,
-        el("div", { class: "note", text: "Code runs in " + s.app_name + " on this computer, with your permissions." }),
+        note ? el("div", { class: "note", text: note }) : null,
         el("div", { class: "row" }, [
           button(pending.approve_label, () => send("approve", { id: pending.id }), "primary"),
           button("Deny", () => send("deny", { id: pending.id })),

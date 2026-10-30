@@ -108,6 +108,9 @@ test("an offload shows the CLI's own plan and waits for Approve before copying",
     assert.equal(ctl.asked.length, 1);
     assert.match(ctl.asked[0].title, /copy 2 files \(2\.00 GB\)/);
     assert.ok(ctl.asked[0].lines.some((l) => l.includes("Nothing at a destination is replaced")));
+    // A copy is not code: the panel shows it as plain text with its own note.
+    assert.equal(ctl.asked[0].plain, true);
+    assert.match(ctl.asked[0].note, /NOLGIA CLI does this on this computer/);
     assert.equal(res.exit_code, 0);
     assert.equal(res.result.status, "complete");
     const runs = fs.readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));

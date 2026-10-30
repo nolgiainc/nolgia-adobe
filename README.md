@@ -29,11 +29,11 @@ switches. Closing the panel does not disconnect.
    Adobe's own installer. On Windows:
 
    ```bat
-   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.3.zxp
+   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.4.zxp
    ```
 
    On macOS the same tool is
-   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.3.zxp`.
+   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.4.zxp`.
    The installer skips a version that is already installed: to reinstall the
    same version, remove it first (`/remove NOLGIA`). The package is signed, so
    no debug setting is needed.
@@ -288,7 +288,7 @@ keeps it in `dist` (ignored by git):
 
 ```sh
 node tools/build.js --zxpsigncmd /path/to/ZXPSignCmd.exe
-# dist/nolgia-adobe-0.2.3.zxp
+# dist/nolgia-adobe-0.2.4.zxp
 node tools/build-transcripts.js
 # dist/nolgia-premiere-transcripts-<version>.ccx (NOLGIA Transcripts, a plain zip;
 # build.js also puts it inside the .zxp, for the panel's Install transcripts)
@@ -337,7 +337,19 @@ October 29, 2026 (macOS 26.6.2, After Effects 26.5.0 build 89, Premiere Pro
 "26.5 (build 89)" and Untitled-1, and the sign in page named each app. One
 gap it found: After Effects' `info` result still said "26.5x89". 0.2.3 makes
 the `info` result use the same label as the session (and the panel's start
-line in Activity), in all three apps; tested on Windows with the unit tests.
+line in Activity), in all three apps.
+
+0.2.3 is broken: its host/nolgia.jsx still said 0.2.2, so the panel never
+accepted the loaded app script and every command answered
+"__NOLGIA_NOT_LOADED__" in all three apps. 0.2.4 fixes that, and the version
+is now checked: it is written in six places (package.json, core/index.js,
+CSXS/manifest.xml's bundle and two extensions, host/nolgia.jsx), and
+`node tools/versions.js`, `tests/version.test.js` and `tools/build.js` all
+refuse a mismatch. The test also runs the panel's own call snippet
+(core/hostcall.js) against the real host/nolgia.jsx. To release a new
+version, change all six. 0.2.4 also shows a request that is not code (a DIT
+copy, opening another project) as plain text with its own note in the
+approval card, instead of as code that "runs in" the app.
 
 DIT (the `dit` command kind running the NOLGIA CLI 0.3.1), on October 15,
 2026, against the real API through `POST /bridge/commands`: in Premiere Pro

@@ -17,7 +17,8 @@
   const core = (name) => require(path.join(root, "core", name));
   const { PLUGIN_VERSION, appInfo } = core("index.js");
   const { Controller } = core("controller.js");
-  const { jsLiteral, appVersionLabel } = core("util.js");
+  const { appVersionLabel } = core("util.js");
+  const hostcall = core("hostcall.js");
   const { appDir } = core("settings.js");
 
   const env = CEP.hostEnvironment();
@@ -40,7 +41,7 @@
 
   // --------------------------------------------------------- ExtendScript
 
-  const NOT_LOADED = "__NOLGIA_NOT_LOADED__";
+  const { NOT_LOADED, SCRIPT_ERROR } = hostcall;
   let loading = null;
 
   function hostFiles() {
@@ -50,11 +51,7 @@
   // Load NOLGIA's ExtendScript into the app (again, if the app dropped it).
   function loadHost() {
     if (!loading) {
-      const script =
-        "(function(){try{" +
-        hostFiles().map((f) => "$.evalFile(new File(" + jsLiteral(f) + "));").join("") +
-        'return "ok";}catch(e){return "error: "+e+" (line "+e.line+(e.fileName?" in "+e.fileName:"")+")";}})()';
-      loading = CEP.evalScript(script).then((answer) => {
+      loading = CEP.evalScript(hostcall.loadScript(hostFiles())).then((answer) => {
         loading = null;
         if (answer !== "ok") log("Could not load NOLGIA's app script: " + answer);
         return answer;
@@ -64,13 +61,7 @@
   }
 
   function callScript(kind, args) {
-    return (
-      "(function(){try{" +
-      'if(typeof __nolgia!=="object"||!__nolgia||__nolgia.version!==' + jsLiteral(PLUGIN_VERSION) +
-      '||!__nolgia.adapter)return ' + jsLiteral(NOT_LOADED) + ";" +
-      "return __nolgia.call(" + jsLiteral(kind) + "," + jsLiteral(args || {}) + ");" +
-      '}catch(e){return "__NOLGIA_ERROR__"+e+" (line "+e.line+")";}})()'
-    );
+    return hostcall.callScript(kind, args, PLUGIN_VERSION);
   }
 
   // Run one NOLGIA call in the app. Resolves {ok, result, error}.
@@ -82,8 +73,8 @@
       answer = await CEP.evalScript(callScript(kind, args));
     }
     if (typeof answer !== "string") return { ok: false, error: app.name + " gave no answer." };
-    if (answer.indexOf("__NOLGIA_ERROR__") === 0) {
-      return { ok: false, error: "NOLGIA's app script failed: " + answer.slice(16) };
+    if (answer.indexOf(SCRIPT_ERROR) === 0) {
+      return { ok: false, error: "NOLGIA's app script failed: " + answer.slice(SCRIPT_ERROR.length) };
     }
     if (answer === "EvalScript error.") {
       return { ok: false, error: app.name + " could not run NOLGIA's script (EvalScript error)." };

@@ -171,6 +171,7 @@ test("Ask before running code: approve, deny, and nobody there", async () => {
     const p = ctl.state().approvals[0];
     assert.equal(p.title, "Your NOLGIA Agent wants to run ExtendScript in After Effects");
     assert.deepEqual(p.lines, ["app.project.save();", "result = 1;"]);
+    assert.equal(p.plain, false, "code shows as code");
     assert.equal(ctl.statusLine(), "Waiting for you to approve a request.");
     ctl.action({ action: decision, id: p.id });
     return pending;
@@ -349,6 +350,7 @@ test("save resolves paths next to the project; open over unsaved changes asks fi
   const pending = command("open", { path: other });
   await support.until(() => ctl.approvals.length === 1, 10, "approval");
   assert.equal(ctl.approvals[0].approveLabel, "Open and lose changes");
+  assert.equal(ctl.state().approvals[0].plain, true, "opening a project is not code");
   ctl.action({ action: "approve", id: ctl.approvals[0].id });
   assert.equal((await pending).result.path, other);
   const nothing = await command("open", { path: path.join(folder, "nope.aep") });
