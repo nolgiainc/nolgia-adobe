@@ -1298,11 +1298,12 @@ def get_agent(h):
         return h._send(200, agent_view(st, user["user_id"]))
 
 
-# The brain catalogue as nolgia-api serves it (agent_models.go), rates as of 2026-10-29.
+# The brain catalogue as nolgia-api serves it (agents.go), rates, typical turns
+# and the per-turn cap as of 2026-11-03 (nolgia-api #1378).
 AGENT_MODELS = [
-    {"model": "deepseek-v4-flash", "turn_credits": 10, "default": True},
-    {"model": "gemini-3.8-flash", "turn_credits": 25, "default": False},
-    {"model": "claude-opus-5-5", "turn_credits": 70, "default": False},
+    {"model": "deepseek-v4-flash", "turn_credits": 10, "typical_turn_credits": 10, "turn_ceiling_credits": 200, "default": True},
+    {"model": "gemini-3.8-flash", "turn_credits": 25, "typical_turn_credits": 35, "turn_ceiling_credits": 200, "default": False},
+    {"model": "claude-opus-5-5", "turn_credits": 70, "typical_turn_credits": 120, "turn_ceiling_credits": 200, "default": False},
 ]
 
 

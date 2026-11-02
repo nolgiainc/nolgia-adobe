@@ -29,11 +29,11 @@ switches. Closing the panel does not disconnect.
    Adobe's own installer. On Windows:
 
    ```bat
-   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.7.zxp
+   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.8.zxp
    ```
 
    On macOS the same tool is
-   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.7.zxp`.
+   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.8.zxp`.
    The installer skips a version that is already installed: to reinstall the
    same version, remove it first (`/remove NOLGIA`). The package is signed, so
    no debug setting is needed.
@@ -98,10 +98,15 @@ Photoshop.
 - **What it needs:** Connected and Allow NOLGIA Agent on, since the Agent
   reaches this app through them. When one is off, the card says so, with one
   button that turns it on.
-- **Cost:** the line under the box gives what a turn costs on your Agent's
-  model. It reads "NOLGIA Agent works right here, each turn from N credits on
-  your model", with N from `GET /agent/models` for the brain `GET /agent`
-  names. If NOLGIA doesn't say, it gives the lowest rate, from 10 credits.
+- **Cost:** the line under the box gives what a turn typically costs on your
+  Agent's model and the most a turn's own work is billed. It reads "NOLGIA
+  Agent works right here, about N credits a turn on your model, never more
+  than C for its own work", with N (`typical_turn_credits`) and C
+  (`turn_ceiling_credits`) from `GET /agent/models` for the brain `GET /agent`
+  names. Anything the Agent makes, such as a video, is billed on its own. An
+  API that publishes only the flat rate gives "each turn from N credits on
+  your model"; if NOLGIA doesn't say, it gives the lowest rate, from 10
+  credits.
 - **No Agent or no credits:** if your account has no NOLGIA Agent yet, or no
   credits left, the card says so, with a link to nolgia.ai.
 - **Signing out** forgets the chats on this computer (`chat.json` next to
@@ -291,7 +296,7 @@ keeps it in `dist` (ignored by git):
 
 ```sh
 node tools/build.js --zxpsigncmd /path/to/ZXPSignCmd.exe
-# dist/nolgia-adobe-0.2.7.zxp
+# dist/nolgia-adobe-0.2.8.zxp
 node tools/build-transcripts.js
 # dist/nolgia-premiere-transcripts-<version>.ccx (NOLGIA Transcripts, a plain zip;
 # build.js also puts it inside the .zxp, for the panel's Install transcripts)
@@ -370,6 +375,12 @@ request showed, and approved a click 0.3 s after a request showed, a press
 at 0.3 s released at 1.5 s, and Return and Space after a click had left
 the button with focus; 0.2.5 moved nothing and approved none of these, and
 approved a click 1.5 s after the request showed. Not run in the apps.
+
+0.2.8 (November 3, 2026): the cost line under the chat says what a turn
+typically costs on your model and the cap on a turn's own work ("about 120
+credits a turn on your model, never more than 200 for its own work" on Claude
+Opus 5.5), read from nolgia-api #1378, instead of the flat minimum ("each turn
+from 70 credits"). Unit tests against the mock API; not yet run on macOS.
 
 0.2.7 (November 2, 2026): since nolgia-api #1363 an asset's download link is
 the file the model delivered. A Seedance 2.5 720p original is H.264 High 4:4:4

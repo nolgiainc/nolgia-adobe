@@ -12,7 +12,7 @@ const path = require("path");
 
 const support = require("./support");
 const { ApiClient, normalizeBaseUrl } = require("../core/api");
-const { AgentChat, formatReply, sessionName, timeKey, failureText, turnRate, MAX_CHARS, COST_LINE } = require("../core/chat");
+const { AgentChat, formatReply, sessionName, timeKey, failureText, turnRate, costLine, MAX_CHARS, COST_LINE } = require("../core/chat");
 const { Controller } = require("../core/controller");
 const { AGENT_URL, BILLING_URL, APPS } = require("../core/index");
 
@@ -258,16 +258,19 @@ test("Stop ends the running turn; only the newest reply's question takes answers
   assert.equal(chat.view().rows[1].question, null);
 });
 
-test("the cost line puts NOLGIA Agent first, with this account's own turn rate", async () => {
+test("the cost line puts NOLGIA Agent first, with what a turn typically costs on this account's model and the cap", async () => {
   let chat = newChat(owner());
   await chat.start();
-  assert.equal(chat.view().costLine, "NOLGIA Agent works right here, each turn from 10 credits on your model. You can also use Claude, Cursor, Codex or another agent with NOLGIA connected.");
+  assert.equal(chat.view().costLine, "NOLGIA Agent works right here, about 10 credits a turn on your model, never more than 200 for its own work. You can also use Claude, Cursor, Codex or another agent with NOLGIA connected.");
   await mockAgent({ model: "claude-opus-5-5" });
   chat = newChat(owner());
   await chat.start();
-  assert.match(chat.view().costLine, /^NOLGIA Agent works right here, each turn from 70 credits on your model\./);
+  assert.match(chat.view().costLine, /^NOLGIA Agent works right here, about 120 credits a turn on your model, never more than 200 for its own work\./);
   chat.newChat();
-  assert.match(chat.view().costLine, /from 70 credits on your model/);
+  assert.match(chat.view().costLine, /about 120 credits a turn on your model/);
+  // An API that publishes only the flat rate keeps the old line.
+  assert.match(costLine(turnRate({ model: "claude-opus-5-5" }, [{ model: "claude-opus-5-5", turn_credits: 70, default: false }])), /each turn from 70 credits on your model\./);
+  assert.doesNotMatch(costLine({ rate: 70, typical: 120, cap: 200 }), /without asking/);
   await mockAgent({ models_error: true });
   chat = newChat(owner());
   await chat.start();

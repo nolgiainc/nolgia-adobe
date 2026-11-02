@@ -30,12 +30,17 @@ const { AGENT_URL, BILLING_URL } = require("./index");
 const { timers } = require("./util");
 
 // The line under the chat box: NOLGIA Agent first (the work never needs to
-// leave NOLGIA), with what a turn costs on the person's own model (GET
-// /agent/models for the Agent's brain), or the lowest rate when NOLGIA does
-// not say; then the familiar agents NOLGIA connects to (Claude, Cursor and
-// Codex; nolgia.ai/mcp has the setup).
-const COST_LINE = "NOLGIA Agent works right here, each turn from 10 credits. You can also use Claude, Cursor, Codex or another agent with NOLGIA connected.";
-const COST_LINE_RATE = "NOLGIA Agent works right here, each turn from {credits} credits on your model. You can also use Claude, Cursor, Codex or another agent with NOLGIA connected.";
+// leave NOLGIA), with what a turn typically costs on the person's own model
+// and the most a turn's own work is ever billed (GET /agent/models for the
+// Agent's brain: typical_turn_credits and turn_ceiling_credits), then the
+// familiar agents NOLGIA connects to (Claude, Cursor and Codex; nolgia.ai/mcp
+// has the setup). An API that does not publish the typical turn yet gives the
+// flat minimum ("each turn from N"); one that does not answer, the lowest rate.
+const AGENTS_TAIL = " You can also use Claude, Cursor, Codex or another agent with NOLGIA connected.";
+const COST_LINE = "NOLGIA Agent works right here, each turn from 10 credits." + AGENTS_TAIL;
+const COST_LINE_RATE = "NOLGIA Agent works right here, each turn from {credits} credits on your model." + AGENTS_TAIL;
+const COST_LINE_TYPICAL = "NOLGIA Agent works right here, about {typical} credits a turn on your model." + AGENTS_TAIL;
+const COST_LINE_TYPICAL_CAP = "NOLGIA Agent works right here, about {typical} credits a turn on your model, never more than {cap} for its own work." + AGENTS_TAIL;
 
 const MAX_CHARS = 8000; // SubmitAgentMessageRequest.content
 const SESSION_NAME_MAX = 80;
@@ -76,18 +81,27 @@ function byTime(a, b) {
   return ka < kb ? -1 : 1;
 }
 
-/** What one turn costs on the Agent's brain: its catalogue rate (the
- *  default brain's when none is chosen), or null when unknown. */
+/** What one turn costs on the Agent's brain (the default brain's when none
+ *  is chosen): {rate, typical, cap} from the catalogue, typical and cap null
+ *  when the API does not publish them; null when the brain is unknown. */
 function turnRate(agent, models) {
   if (!agent || !Array.isArray(models)) return null;
   const chosen = agent.model ? models.find((m) => m && m.model === agent.model) : models.find((m) => m && m.default);
-  const credits = chosen && chosen.turn_credits;
-  return Number.isInteger(credits) && credits > 0 ? credits : null;
+  if (!chosen) return null;
+  const whole = (n) => (Number.isInteger(n) && n > 0 ? n : null);
+  const rate = whole(chosen.turn_credits);
+  if (!rate) return null;
+  const typical = whole(chosen.typical_turn_credits);
+  const cap = whole(chosen.turn_ceiling_credits);
+  return { rate, typical: typical && typical >= rate ? typical : null, cap: cap && typical && cap >= typical ? cap : null };
 }
 
 /** The cost line under the box. */
 function costLine(rate) {
-  return rate ? COST_LINE_RATE.replace("{credits}", String(rate)) : COST_LINE;
+  if (!rate) return COST_LINE;
+  if (rate.typical && rate.cap) return COST_LINE_TYPICAL_CAP.replace("{typical}", String(rate.typical)).replace("{cap}", String(rate.cap));
+  if (rate.typical) return COST_LINE_TYPICAL.replace("{typical}", String(rate.typical));
+  return COST_LINE_RATE.replace("{credits}", String(rate.rate));
 }
 
 /** A failed or stopped reply, in words for the panel. */
@@ -193,7 +207,7 @@ class AgentChat {
     this.stopping = false;
     this.notice = null; // {kind, text, action: {label, url}|null}
     this.agent = undefined; // GET /agent: undefined unread, null none
-    this.rate = null; // credits a turn costs on the Agent's brain, when known
+    this.rate = null; // {rate, typical, cap}: what a turn costs on the Agent's brain, when known
     this.loaded = false;
     this.instanceId = null; // the instance this chat was read for
     this._generation = (this._generation || 0) + 1;
@@ -663,4 +677,4 @@ class AgentChat {
   }
 }
 
-module.exports = { AgentChat, formatReply, inlineParts, sessionName, failureText, pollDelay, timeKey, turnRate, costLine, MAX_CHARS, COST_LINE, COST_LINE_RATE };
+module.exports = { AgentChat, formatReply, inlineParts, sessionName, failureText, pollDelay, timeKey, turnRate, costLine, MAX_CHARS, COST_LINE, COST_LINE_RATE, COST_LINE_TYPICAL, COST_LINE_TYPICAL_CAP };
