@@ -238,6 +238,36 @@ test("import_asset downloads next to the project and converts WebP to PNG", asyn
   await finish(ctl);
 });
 
+test("import_asset brings a 4:4:4 original in as its H.264 copy, and an HEVC original as it is", async () => {
+  const host = fakeHost({
+    snapshot: (args, h) => ({ document: { name: "cut.prproj", path: path.join(h.documents, "cut.prproj") }, dirty: false }),
+    import: (args) => ({ imported: [path.basename(args.path)], item_id: 7 }),
+  });
+  const ctl = await connected(controllerFor(host));
+  const qt = (bytes) => Buffer.concat([Buffer.from([0, 0, 0, 20]), Buffer.from("ftypqt  "), Buffer.from(bytes)]);
+  const mp4 = (bytes) => Buffer.concat([Buffer.from([0, 0, 0, 20]), Buffer.from("ftypisom"), Buffer.from(bytes)]);
+  // Seedance 2.5's 720p original: H.264 High 4:4:4 in a QuickTime file.
+  const four = await support.call(server, "POST",
+    "/mock/assets?filename=" + encodeURIComponent("Runner.mov") + "&content_type=video/quicktime&original_pix_fmt=yuv444p&playback=" +
+      encodeURIComponent("AAAAftypisomthe H.264 copy"),
+    qt("the 4:4:4 original"), { token: null });
+  const done = await command("import_asset", { asset_id: four.body.id });
+  assert.equal(done.status, "succeeded", JSON.stringify(done));
+  assert.equal(done.result.kind, "video");
+  assert.equal(done.result.compatible_copy, true);
+  assert.equal(path.extname(done.result.path), ".mp4");
+  assert.ok(fs.readFileSync(done.result.path).includes("the H.264 copy"), "the copy, not the 4:4:4 original, is imported");
+  // An HEVC 10-bit original imports as the model made it.
+  const hevc = await support.call(server, "POST",
+    "/mock/assets?filename=" + encodeURIComponent("Kitchen.mp4") + "&content_type=video/mp4&original_codec=hevc&original_pix_fmt=yuv420p10le&playback=AAAAftypisomcopy",
+    mp4("the HEVC original"), { token: null });
+  const kept = await command("import_asset", { asset_id: hevc.body.id });
+  assert.equal(kept.status, "succeeded", JSON.stringify(kept));
+  assert.equal(kept.result.compatible_copy, undefined);
+  assert.ok(fs.readFileSync(kept.result.path).includes("the HEVC original"));
+  await finish(ctl);
+});
+
 test("import_asset installs a color preset where Lumetri finds it: looks in Creative, log variants in Technical", async () => {
   const host = fakeHost();
   const luts = path.join(host.root, "LUTs");

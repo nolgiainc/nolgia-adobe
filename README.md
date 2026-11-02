@@ -29,11 +29,11 @@ switches. Closing the panel does not disconnect.
    Adobe's own installer. On Windows:
 
    ```bat
-   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.6.zxp
+   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.7.zxp
    ```
 
    On macOS the same tool is
-   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.6.zxp`.
+   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.7.zxp`.
    The installer skips a version that is already installed: to reinstall the
    same version, remove it first (`/remove NOLGIA`). The package is signed, so
    no debug setting is needed.
@@ -291,7 +291,7 @@ keeps it in `dist` (ignored by git):
 
 ```sh
 node tools/build.js --zxpsigncmd /path/to/ZXPSignCmd.exe
-# dist/nolgia-adobe-0.2.6.zxp
+# dist/nolgia-adobe-0.2.7.zxp
 node tools/build-transcripts.js
 # dist/nolgia-premiere-transcripts-<version>.ccx (NOLGIA Transcripts, a plain zip;
 # build.js also puts it inside the .zxp, for the panel's Install transcripts)
@@ -370,6 +370,14 @@ request showed, and approved a click 0.3 s after a request showed, a press
 at 0.3 s released at 1.5 s, and Return and Space after a click had left
 the button with focus; 0.2.5 moved nothing and approved none of these, and
 approved a click 1.5 s after the request showed. Not run in the apps.
+
+0.2.7 (November 2, 2026): since nolgia-api #1363 an asset's download link is
+the file the model delivered. A Seedance 2.5 720p original is H.264 High 4:4:4
+in a QuickTime file, which Premiere Pro and After Effects do not decode, so an
+import brings such a clip in as its 8-bit H.264 copy (the result says
+compatible_copy); an HEVC 10-bit original (Seedance 2.5 1080p, every Topaz
+restore) is imported as the model made it. Unit tests against the mock API;
+the import was not run in the apps for this release, and not yet on macOS.
 
 0.2.6 (from the owner's fourth Mac test):
 - A DIT plan's sizes read as the CLI writes them (601.5 KB, 9.3 MB), never

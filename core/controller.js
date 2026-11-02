@@ -1121,7 +1121,8 @@ class Controller {
       }
       throw err;
     }
-    const url = asset && asset.signed_url;
+    const source = util.importSource(asset);
+    const url = source.url;
     if (!url) throw new CommandError("NOLGIA did not give a download link for asset " + assetId + ".");
     const name = asset.display_name || assetId;
     const folder = path.join(this.downloadDir(), util.safeFilename(assetId));
@@ -1136,10 +1137,11 @@ class Controller {
         if (err instanceof NetworkError) throw new CommandError("Could not download the asset from NOLGIA (" + err.message + ").");
         throw err;
       }
-      let ext = util.importExtension(name, asset.mime_type, head);
+      // The copy is an MP4 whatever the original's name says (".mov").
+      let ext = util.importExtension(source.compatible ? path.parse(name).name : name, source.mimeType, head);
       if (!ext) {
         throw new CommandError(
-          this.app.name + " cannot import this file type (" + (asset.mime_type || "unknown") + ")."
+          this.app.name + " cannot import this file type (" + (source.mimeType || "unknown") + ")."
         );
       }
       const base = util.safeFilename(path.parse(name).name, assetId);
@@ -1159,7 +1161,7 @@ class Controller {
         { path: finalPath, kind, as: command.args.as, name: base, asset_id: assetId },
         command
       );
-      return Object.assign({ kind, path: finalPath }, result);
+      return Object.assign({ kind, path: finalPath }, source.compatible ? { compatible_copy: true } : {}, result);
     } finally {
       fs.rmSync(temp, { force: true });
     }

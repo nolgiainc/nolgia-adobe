@@ -175,6 +175,22 @@ function sniffExtension(head) {
 // Pick the extension to save a downloaded asset under: the name's own
 // extension when it is one we can import, then the MIME type, then the
 // file's first bytes.
+// The file an app imports for an asset, and its type. Since nolgia-api
+// #1363 an asset's signed_url is the model's original. Seedance 2.5's 720p
+// original is H.264 High 4:4:4 in a QuickTime file, a profile Premiere Pro and
+// After Effects cannot decode, so such an asset is imported as its 8-bit
+// H.264 playback copy. Every other original (HEVC 10-bit, 4:2:0) is imported
+// as the model made it.
+function importSource(asset) {
+  const original = asset && asset.original;
+  const playback = asset && asset.playback;
+  const fourFourFour = Boolean(original && /^yuv444/.test(String(original.pix_fmt || "")));
+  if (fourFourFour && playback && playback.status === "ready" && playback.signed_url) {
+    return { url: playback.signed_url, mimeType: playback.mime_type || "video/mp4", compatible: true };
+  }
+  return { url: asset && asset.signed_url, mimeType: asset && asset.mime_type, compatible: false };
+}
+
 function importExtension(displayName, mimeType, head) {
   let ext = path.extname(String(displayName || "")).toLowerCase();
   if (IMPORT_KINDS[ext]) return ext;
@@ -334,6 +350,7 @@ module.exports = {
   IMPORT_KINDS,
   sniffExtension,
   importExtension,
+  importSource,
   safeFilename,
   jsLiteral,
   sleep,

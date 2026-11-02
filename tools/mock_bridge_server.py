@@ -278,6 +278,23 @@ class MockState:
             "status": a["status"],
             "favorite": False,
             "projects": [{"id": pid} for pid in a.get("project_ids", [])],
+            **self.original_view(a, host),
+        }
+
+    def original_view(self, a, host):
+        # A generated video the API keeps as the model's original beside an
+        # 8-bit H.264 playback copy (nolgia-api #1363): signed_url is the
+        # original, playback.signed_url the copy.
+        if not a.get("original"):
+            return {}
+        return {
+            "original": a["original"],
+            "playback": {
+                "status": "ready",
+                "signed_url": "http://%s/storage/assets/%s/playback?X-Mock-Signature=%s" % (host, a["id"], a["sig"]),
+                "mime_type": "video/mp4",
+                "source_codec": a["original"].get("video_codec"),
+            },
         }
 
     def new_asset(self, user_id, filename, content_type, size_bytes, display_name=None, tags=None, data=None):
@@ -1017,6 +1034,18 @@ def get_asset(h, asset_id):
     return h._send(200, view)
 
 
+@route("GET", r"/storage/assets/([^/]+)/playback")
+def download_playback(h, asset_id):
+    h.no_bearer()
+    st = h.state
+    with st.cond:
+        asset = st.assets.get(asset_id)
+        if asset is None or not asset.get("original") or h.query.get("X-Mock-Signature") != asset["sig"]:
+            raise HttpError(403, "AccessDenied", "bad or missing signature")
+        data = asset["playback_bytes"]
+    return h._send(200, raw=data, content_type="video/mp4")
+
+
 @route("GET", r"/storage/assets/([^/]+)")
 def download_asset(h, asset_id):
     h.no_bearer()
@@ -1154,6 +1183,13 @@ def mock_create_asset(h):
                              [], h.raw_body)
         if h.query.get("project_id"):
             asset["project_ids"].append(h.query["project_id"].lower())
+        if h.query.get("original_pix_fmt"):
+            # ?original_pix_fmt=yuv444p&playback=<bytes of the copy>: the asset
+            # is a model's original with an H.264 playback copy beside it.
+            asset["original"] = {"mime_type": ctype, "size_bytes": len(h.raw_body),
+                                 "video_codec": h.query.get("original_codec", "h264"),
+                                 "pix_fmt": h.query["original_pix_fmt"]}
+            asset["playback_bytes"] = h.query.get("playback", "").encode()
         view = st.asset_view(asset, h.host)
     return h._send(201, view)
 
