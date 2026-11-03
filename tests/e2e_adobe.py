@@ -59,7 +59,7 @@ from mock_bridge_server import MockBridgeServer  # noqa: E402
 
 TOKEN = "e2e-token"
 VERSION = json.load(open(os.path.join(ADOBE, "package.json")))["version"]
-CAPABILITIES = ["info", "run", "preview", "import_asset", "export", "save", "open"]
+CAPABILITIES = ["info", "run", "preview", "import_asset", "export", "save", "open", "dit"]
 UPIA = r"C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe"
 UPIA_MAC = ("/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/"
             "UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent")
