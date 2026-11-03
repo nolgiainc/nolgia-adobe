@@ -279,6 +279,7 @@ class MockState:
             "favorite": False,
             "projects": [{"id": pid} for pid in a.get("project_ids", [])],
             **self.original_view(a, host),
+            **({"matte_layer_asset_id": a["matte_layer_asset_id"]} if a.get("matte_layer_asset_id") else {}),
         }
 
     def original_view(self, a, host):
@@ -1183,6 +1184,9 @@ def mock_create_asset(h):
                              [], h.raw_body)
         if h.query.get("project_id"):
             asset["project_ids"].append(h.query["project_id"].lower())
+        if h.query.get("matte_layer_asset_id"):
+            # a green screen or keep-me render's result names its matte layer
+            asset["matte_layer_asset_id"] = h.query["matte_layer_asset_id"]
         if h.query.get("original_pix_fmt"):
             # ?original_pix_fmt=yuv444p&playback=<bytes of the copy>: the asset
             # is a model's original with an H.264 playback copy beside it.

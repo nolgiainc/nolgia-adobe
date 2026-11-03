@@ -351,6 +351,21 @@
       if (args.as === "layer") {
         var c = targetComp(null, true);
         var layer = c.layers.add(item);
+        if (args.matte_for) {
+          // The matte of the result at matte_for: right above it, its grey
+          // read as alpha (Shift Channels, alpha from luminance) with a 2 px
+          // choke so no backdrop rim survives, named and switched off: a
+          // track matte source for the editor (Track Matte: Alpha).
+          // (layers.add puts it at the top, which is right above the result
+          // the same import just added.)
+          layer.name = args.name || layer.name;
+          var shift = layer.property("ADBE Effect Parade").addProperty("ADBE Shift Channels");
+          shift.property(1).setValue(5);
+          var choke = layer.property("ADBE Effect Parade").addProperty("ADBE Simple Choker");
+          choke.property(2).setValue(2);
+          layer.enabled = false;
+          out.matte_layer = true;
+        }
         out.comp = c.name;
         out.layer = layer.name;
         out.layer_index = layer.index;

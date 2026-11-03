@@ -238,6 +238,32 @@ test("import_asset downloads next to the project and converts WebP to PNG", asyn
   await finish(ctl);
 });
 
+test("import_asset brings a keep-me render's matte in as its own layer in After Effects", async () => {
+  const host = fakeHost({
+    snapshot: (args, h) => ({ document: { name: "shot.aep", path: path.join(h.documents, "shot.aep") }, dirty: false }),
+    import: (args) => ({ imported: [path.basename(args.path)], item_id: 9, layer: args.name, layer_index: 1 }),
+  });
+  const ctl = await connected(controllerFor(host));
+  const mp4 = (bytes) => Buffer.concat([Buffer.from([0, 0, 0, 20]), Buffer.from("ftypisom"), Buffer.from(bytes)]);
+  const matte = await support.call(server, "POST", "/mock/assets?filename=Walk%20matte.mp4&content_type=video/mp4", mp4("the grey matte"), { token: null });
+  const result = await support.call(server, "POST",
+    "/mock/assets?filename=Walk.mp4&content_type=video/mp4&matte_layer_asset_id=" + matte.body.id, mp4("the composite"), { token: null });
+  const done = await command("import_asset", { asset_id: result.body.id, as: "layer" });
+  assert.equal(done.status, "succeeded", JSON.stringify(done));
+  assert.equal(done.result.matte.asset_id, matte.body.id);
+  const imports = host.calls.filter(([k]) => k === "import").map(([, a]) => a);
+  assert.equal(imports.length, 2);
+  assert.equal(imports[1].matte_for, 1, "the matte goes right above the result the same import added");
+  assert.equal(imports[1].name, "Walk matte");
+  assert.ok(fs.readFileSync(imports[1].path).includes("the grey matte"));
+  // Asked without it: only the result.
+  host.calls.length = 0;
+  const alone = await command("import_asset", { asset_id: result.body.id, as: "layer", with_matte: false });
+  assert.equal(alone.result.matte, undefined);
+  assert.equal(host.calls.filter(([k]) => k === "import").length, 1);
+  await finish(ctl);
+});
+
 test("import_asset brings a 4:4:4 original in as its H.264 copy, and an HEVC original as it is", async () => {
   const host = fakeHost({
     snapshot: (args, h) => ({ document: { name: "cut.prproj", path: path.join(h.documents, "cut.prproj") }, dirty: false }),
