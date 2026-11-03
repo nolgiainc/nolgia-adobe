@@ -29,11 +29,11 @@ switches. Closing the panel does not disconnect.
    Adobe's own installer. On Windows:
 
    ```bat
-   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.8.zxp
+   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.9.zxp
    ```
 
    On macOS the same tool is
-   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.8.zxp`.
+   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.9.zxp`.
    The installer skips a version that is already installed: to reinstall the
    same version, remove it first (`/remove NOLGIA`). The package is signed, so
    no debug setting is needed.
@@ -296,7 +296,7 @@ keeps it in `dist` (ignored by git):
 
 ```sh
 node tools/build.js --zxpsigncmd /path/to/ZXPSignCmd.exe
-# dist/nolgia-adobe-0.2.8.zxp
+# dist/nolgia-adobe-0.2.9.zxp
 node tools/build-transcripts.js
 # dist/nolgia-premiere-transcripts-<version>.ccx (NOLGIA Transcripts, a plain zip;
 # build.js also puts it inside the .zxp, for the panel's Install transcripts)
@@ -375,6 +375,16 @@ request showed, and approved a click 0.3 s after a request showed, a press
 at 0.3 s released at 1.5 s, and Return and Space after a click had left
 the button with focus; 0.2.5 moved nothing and approved none of these, and
 approved a click 1.5 s after the request showed. Not run in the apps.
+
+0.2.9 (November 3, 2026): in After Effects, importing the result of a green
+screen or keep-me render (nolgia-api #1423: `matte_layer_asset_id`) also
+brings in the matte it was composited with, a grey MP4 (white = the person),
+as its own layer right above the result: named "<result> matte", read as
+alpha (Shift Channels, alpha from luminance) with a 2 px Simple Choker, and
+switched off, ready to be any layer's alpha track matte. `with_matte: false`
+imports the result alone; a matte that cannot come in never fails the
+import. Unit tests against the mock API; run in After Effects on Windows (see
+below). Not run on macOS.
 
 0.2.8 (November 3, 2026): the cost line under the chat says what a turn
 typically costs on your model and the cap on a turn's own work ("about 120

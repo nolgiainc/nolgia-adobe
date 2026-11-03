@@ -222,6 +222,9 @@ function validate(app, kind, args) {
       throw new CommandError("`asset_id` is required, or `color_preset` for one of NOLGIA's film stocks.");
     }
     out.as = strArg(args, "as", { choices: IMPORT_AS[app.app] });
+    // A green screen or keep-me result's matte comes in beside it in After
+    // Effects unless this is false.
+    if (args.with_matte !== undefined && args.with_matte !== null) out.with_matte = boolArg(args, "with_matte");
   } else if (kind === "export") {
     out.format = String(strArg(args, "format", { required: true }) || "").toLowerCase().replace(/^\./, "");
     if (!app.exportFormats.includes(out.format)) {

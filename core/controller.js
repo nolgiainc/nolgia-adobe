@@ -1112,23 +1112,57 @@ class Controller {
   async do_import_asset(command, api) {
     if (command.args.color_preset) return this.installColorPreset(command, api);
     const assetId = command.args.asset_id;
-    let asset;
+    const asset = await this.readImportAsset(api, assetId);
+    const main = await this.downloadImport(api, assetId, asset);
+    const result = await this.hostOrFail(
+      "import",
+      { path: main.path, kind: main.kind, as: command.args.as, name: main.base, asset_id: assetId },
+      command
+    );
+    const out = Object.assign({ kind: main.kind, path: main.path }, main.compatible ? { compatible_copy: true } : {}, result);
+    // A green screen or keep-me render comes with the matte it was
+    // composited with (nolgia-api: matte_layer_asset_id, a grey MP4, white =
+    // the person). In After Effects it comes in as its own layer right above
+    // the result, set up as an alpha source (alpha from luminance, a 2 px
+    // choke) and switched off, so an editor can use it as a track matte to
+    // put the person over anything else. Never fails the import itself.
+    if (this.app.app === "after_effects" && asset.matte_layer_asset_id && command.args.with_matte !== false) {
+      try {
+        const matteAsset = await this.readImportAsset(api, asset.matte_layer_asset_id);
+        const matte = await this.downloadImport(api, asset.matte_layer_asset_id, matteAsset, main.base + " matte");
+        const placed = await this.hostOrFail(
+          "import",
+          { path: matte.path, kind: matte.kind, as: command.args.as, name: matte.base, asset_id: asset.matte_layer_asset_id, matte_for: result.layer_index || null },
+          command
+        );
+        out.matte = Object.assign({ asset_id: asset.matte_layer_asset_id, path: matte.path }, placed);
+      } catch (err) {
+        out.matte_error = "The result came in, but its matte layer did not (" + (err && err.message ? err.message : String(err)) + ").";
+      }
+    }
+    return out;
+  }
+
+  async readImportAsset(api, assetId) {
     try {
-      asset = await api.getAsset(assetId);
+      return await api.getAsset(assetId);
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
         throw new CommandError("NOLGIA has no asset " + assetId + " in this account.");
       }
       throw err;
     }
+  }
+
+  // Downloads one asset next to the document for import: { path, kind, base, compatible }.
+  async downloadImport(api, assetId, asset, nameOverride) {
     const source = util.importSource(asset);
     const url = source.url;
     if (!url) throw new CommandError("NOLGIA did not give a download link for asset " + assetId + ".");
-    const name = asset.display_name || assetId;
+    const name = nameOverride || asset.display_name || assetId;
     const folder = path.join(this.downloadDir(), util.safeFilename(assetId));
     fs.mkdirSync(folder, { recursive: true });
     const temp = path.join(folder, "download.part-" + process.pid);
-    let finalPath;
     try {
       let head;
       try {
@@ -1145,7 +1179,7 @@ class Controller {
         );
       }
       const base = util.safeFilename(path.parse(name).name, assetId);
-      finalPath = path.join(folder, base + ext);
+      let finalPath = path.join(folder, base + ext);
       if (ext === ".webp") {
         // Adobe's apps do not read WebP; convert it to PNG here.
         finalPath = path.join(folder, base + ".png");
@@ -1155,13 +1189,7 @@ class Controller {
       } else {
         fs.renameSync(temp, finalPath);
       }
-      const kind = util.IMPORT_KINDS[ext];
-      const result = await this.hostOrFail(
-        "import",
-        { path: finalPath, kind, as: command.args.as, name: base, asset_id: assetId },
-        command
-      );
-      return Object.assign({ kind, path: finalPath }, source.compatible ? { compatible_copy: true } : {}, result);
+      return { path: finalPath, kind: util.IMPORT_KINDS[ext], base, compatible: Boolean(source.compatible) };
     } finally {
       fs.rmSync(temp, { force: true });
     }
