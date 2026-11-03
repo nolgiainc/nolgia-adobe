@@ -438,11 +438,12 @@ class Caller:
         assert status == 200, status
         return data
 
-    def upload(self, filename, content_type, data):
+    def upload(self, filename, content_type, data, matte_layer=None):
         """An asset for import_asset, as the person's own library would hold it."""
         if self.mock:
+            extra = "&matte_layer_asset_id=%s" % matte_layer if matte_layer else ""
             status, asset = self.http(
-                "POST", "/mock/assets?filename=%s&content_type=%s" % (filename, content_type), data, auth=False)
+                "POST", "/mock/assets?filename=%s&content_type=%s%s" % (filename, content_type, extra), data, auth=False)
             assert status == 201, asset
             return asset["id"]
         status, slot = self.http("POST", "/v1/assets/uploads", {
@@ -608,6 +609,9 @@ def run_app(app, win, caller, checks, opts, api_url, token):
         checks.check(app, "import_asset brings in an image", lambda: _import(caller, app, png))
         if app == "premiere":
             checks.check(app, "import_asset brings in audio", lambda: _import_audio(caller, wav))
+        if app == "after_effects" and caller.mock and shutil.which("ffmpeg"):
+            checks.check(app, "import_asset brings a keep-me result's matte as its own layer",
+                         lambda: _import_matte_layer(caller, work))
         for fmt in {"after_effects": ["png", "mp4"], "premiere": ["png", "mp4"], "illustrator": ["png"]}[app]:
             checks.check(app, "export %s uploads it" % fmt, lambda fmt=fmt: _export_media(caller, app, fmt))
         if app == "illustrator":
@@ -773,6 +777,31 @@ def _import(caller, app, png):
         # A footage item (not only a comp) can be previewed.
         shot = caller.ok("preview", {"comp": res["imported"][0]})
         assert shot["source"] == res["imported"][0] and jpeg_or_png_size(caller.asset_bytes(shot["asset_id"])) == (64, 36), shot
+
+
+def _import_matte_layer(caller, work):
+    """A green screen or keep-me result (nolgia-api #1423) names its matte
+    layer; After Effects brings both in, the matte right above the result,
+    read as alpha (Shift Channels, alpha from luminance; Simple Choker 2 px)
+    and switched off."""
+    def clip(name, vf):
+        path = os.path.join(work, name)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x180:r=24:d=1",
+                        "-vf", vf, "-c:v", "libx264", "-pix_fmt", "yuv420p", path], check=True)
+        with open(path, "rb") as handle:
+            return handle.read()
+    matte = caller.upload("Walk matte.mp4", "video/mp4", clip("e2e-matte.mp4", "drawbox=x=120:y=30:w=80:h=150:color=white:t=fill"))
+    result = caller.upload("Walk.mp4", "video/mp4", clip("e2e-keep.mp4", "drawbox=x=0:y=0:w=320:h=180:color=0x305080:t=fill"), matte_layer=matte)
+    res = caller.ok("import_asset", {"asset_id": result, "as": "layer"})
+    assert res["kind"] == "video" and res["matte"]["asset_id"] == matte and res["matte"]["matte_layer"] is True, res
+    probe = caller.ok("run", {"code": (
+        "var c = app.project.activeItem; var m = c.layer(1); var r = c.layer(2);"
+        "var fx = m.property('ADBE Effect Parade');"
+        "({matte: m.name, enabled: m.enabled, effects: [fx.property(1).matchName, fx.property(2).matchName],"
+        " alpha_from: fx.property(1).property(1).value, choke: fx.property(2).property(2).value, result: r.name})")})["value"]
+    assert probe["matte"].endswith("matte") and probe["enabled"] is False, probe
+    assert probe["effects"] == ["ADBE Shift Channels", "ADBE Simple Choker"] and probe["alpha_from"] == 5 and probe["choke"] == 2, probe
+    assert probe["result"].startswith("Walk"), probe
 
 
 def _import_audio(caller, wav):
