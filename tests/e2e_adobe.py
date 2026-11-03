@@ -46,6 +46,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import wave
 import zlib
@@ -443,7 +444,8 @@ class Caller:
         if self.mock:
             extra = "&matte_layer_asset_id=%s" % matte_layer if matte_layer else ""
             status, asset = self.http(
-                "POST", "/mock/assets?filename=%s&content_type=%s%s" % (filename, content_type, extra), data, auth=False)
+                "POST", "/mock/assets?filename=%s&content_type=%s%s" % (
+                    urllib.parse.quote(filename), urllib.parse.quote(content_type), extra), data, auth=False)
             assert status == 201, asset
             return asset["id"]
         status, slot = self.http("POST", "/v1/assets/uploads", {
