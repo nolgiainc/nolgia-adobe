@@ -28,6 +28,9 @@ const DEFAULTS = {
   // After Effects: back up the project before NOLGIA's first change and save
   // it in place after each change NOLGIA makes (core/work.js).
   save_after_change: true,
+  // The version Not now was pressed for: the update line stays hidden until
+  // a newer one is out (core/update.js).
+  update_dismissed: "",
 };
 
 const ENV_KEYS = [
@@ -46,6 +49,7 @@ const ENV_KEYS = [
   "NOLGIA_TRANSCRIPTS_PORTS",
   "NOLGIA_UPIA",
   "NOLGIA_TRANSCRIPTS_PACKAGE",
+  "NOLGIA_UPDATE_CHECK",
 ];
 
 const TRUE = ["1", "true", "yes", "on"];
