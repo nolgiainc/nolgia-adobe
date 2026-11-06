@@ -100,7 +100,9 @@ for `nolgia_app_run` is ExtendScript.
   of a long Dynamic Link sequence with keys and grades on each.
 - Previews: `nolgia_app_preview` at the width you need (768 is enough to judge
   a key; the plugin renders at a lower resolution to match). Export a full-size
-  `png` only for a frame the person will keep.
+  `png` only for a frame the person will keep. To preview or export a comp that
+  is not the active one (a helper comp of only the range), pass its name as
+  `comp`: never open it in the person's viewer.
 - When you finish, say what changed and what did not: the comp and layers, the
   frames, the effects added; then "Not touched:" the rest (the other frames,
   the person's other layers and comps). Name the file it is saved in (`saved`)
