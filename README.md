@@ -29,11 +29,11 @@ switches. Closing the panel does not disconnect.
    Adobe's own installer. On Windows:
 
    ```bat
-   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.3.0.zxp
+   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.3.1.zxp
    ```
 
    On macOS the same tool is
-   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.3.0.zxp`.
+   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.3.1.zxp`.
    The installer skips a version that is already installed: to reinstall the
    same version, remove it first (`/remove NOLGIA`). The package is signed, so
    no debug setting is needed.
@@ -334,7 +334,7 @@ keeps it in `dist` (ignored by git):
 
 ```sh
 node tools/build.js --zxpsigncmd /path/to/ZXPSignCmd.exe
-# dist/nolgia-adobe-0.3.0.zxp
+# dist/nolgia-adobe-0.3.1.zxp
 node tools/build-transcripts.js
 # dist/nolgia-premiere-transcripts-<version>.ccx (NOLGIA Transcripts, a plain zip;
 # build.js also puts it inside the .zxp, for the panel's Install transcripts)
@@ -439,6 +439,23 @@ Premiere Pro sequences brought in through Dynamic Link. Unit tests against the
 mock API; the end-to-end test in After Effects 25.6, Premiere Pro 26.2.0 and
 Illustrator 30.0.0 on Windows 11 (see "For scripts, render machines and
 tests"). Released without a Mac run: macOS is untested for this version.
+
+0.3.1 (November 6, 2026): the panel says when a newer NOLGIA for Adobe is out.
+It reads NOLGIA's plugins catalog (`GET /desktop-apps`, public, the list
+nolgia.ai/plugins shows) when the panel opens and about every 6 hours while
+the app runs, and when the catalog's version for this app is newer it shows
+one quiet line at the top, "NOLGIA for Adobe 0.3.2 is out.", with the
+catalog's one sentence on what changed (`release_note`) under it. Update opens
+the app's plugin page on nolgia.ai (the download and the steps); Not now hides
+the line until a version newer than that one is out (kept per app in
+settings.json, `update_dismissed`). Nothing is installed from the panel, and
+nothing waits on the check: offline, or on any error, there is no line and no
+message. `NOLGIA_UPDATE_CHECK=0` turns it off. The same in After Effects,
+Premiere Pro and Illustrator. Older panels (0.2.0 to 0.3.0) hear about a newer
+version in their chat instead: nolgia-api adds one line to the first Agent
+reply after a release, once per chat ("A newer NOLGIA for Adobe (0.3.1) is
+out: https://nolgia.ai/plugins/after-effects"). Unit tests (the version
+compare, Not now, errors, the three apps against the mock API's catalog).
 
 0.2.9 (November 3, 2026): in After Effects, importing the result of a green
 screen or keep-me render (nolgia-api #1423: `matte_layer_asset_id`) also

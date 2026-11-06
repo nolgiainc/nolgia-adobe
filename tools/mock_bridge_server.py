@@ -20,6 +20,8 @@ Under /v1:
                  GET /assets?project_id=&sort=&limit=&cursor= (ready assets; pages of `limit`)
   color presets  GET /color-presets, GET /color-presets/{slug}/cube (public, no token needed; a few
                  made-up presets with small 5-point cubes, not the real looks)
+  plugins        GET /desktop-apps (public): the Adobe rows of the plugins catalog, only once a test
+                 (POST /mock/desktop-apps) or --desktop-apps-version set a version; 404 before
   agent chat     GET /agent, GET /agent/models, POST /agent/wake, POST /agent/sessions (app pin), POST /agent/messages
                  (session_id or new_session, steering), GET /agent/messages?session_id=&since=&limit=, GET /agent/messages/{id},
                  GET /agent/sessions/{id}, POST /agent/sessions/{id}/interrupt (the shapes of
@@ -35,6 +37,7 @@ Test helpers (no auth):
                     model?: the Agent's brain (null: the default), models_error?: bool}
   POST /mock/agent/reply {message_id?, content?, status?, error?, error_code?, question?, queued?}
                     settles (or updates) a pending reply; without message_id, the newest pending one
+  POST /mock/desktop-apps {plugin_version, release_note?, status?} | {"error": status} | {} (404 again)
 
 Run:  python3 tools/mock_bridge_server.py --port 8765 --token test-token
 """
@@ -155,8 +158,9 @@ def bad_request(detail):
 
 class MockState:
     def __init__(self, tokens=("test-token",), device_interval=5, auto_approve_after=None,
-                 poll_wait_seconds=MAX_WAIT, rate_limit=RATE_LIMIT):
+                 poll_wait_seconds=MAX_WAIT, rate_limit=RATE_LIMIT, desktop_apps_version=None):
         self.cond = threading.Condition()
+        self.initial_desktop_apps = {"plugin_version": desktop_apps_version} if desktop_apps_version else {}
         self.device_interval = device_interval
         self.auto_approve_after = auto_approve_after
         self.poll_wait_seconds = poll_wait_seconds
@@ -187,6 +191,7 @@ class MockState:
             self.agent_messages = {}
             self.agent_submits = []
             self.agent_creates = []
+            self.desktop_apps = dict(self.initial_desktop_apps)
             self.cond.notify_all()
 
     def add_token(self, token, email="test@nolgia.ai"):
@@ -416,7 +421,8 @@ class Handler(BaseHTTPRequestHandler):
             self.problem(HttpError(500, "Internal Server Error", "%s: %s" % (type(err).__name__, err)))
         with self.state.cond:
             self.state.requests.append({"method": method, "path": parsed.path, "status": status,
-                                        "auth": bool(self.headers.get("Authorization")), "at": now()})
+                                        "auth": bool(self.headers.get("Authorization")),
+                                        "user_agent": self.headers.get("User-Agent") or "", "at": now()})
             del self.state.requests[:-2000]
 
     def problem(self, err):
@@ -1084,6 +1090,43 @@ def color_preset_cube(name, tint):
     return ("\n".join(lines) + "\n").encode("ascii")
 
 
+# The Adobe plugin's rows of nolgia-api's desktop_apps catalog
+# (desktop_apps.go desktopAppResponse); the other apps are left out.
+DESKTOP_APPS_ADOBE = (("after_effects", "After Effects", "after-effects"),
+                      ("premiere", "Premiere Pro", "premiere"),
+                      ("illustrator", "Illustrator", "illustrator"))
+
+
+@route("GET", r"/v1/desktop-apps")
+def list_desktop_apps(h):
+    with h.state.cond:
+        catalog = dict(h.state.desktop_apps)
+    if catalog.get("error"):
+        raise HttpError(int(catalog["error"]), "Internal Server Error", "desktop apps lookup failed")
+    if not catalog.get("plugin_version"):
+        raise HttpError(404, "Not Found", "not found")
+    version = catalog["plugin_version"]
+    apps = []
+    for app, name, slug in DESKTOP_APPS_ADOBE:
+        row = {"id": app, "name": name, "run_language": "extendscript", "status": catalog.get("status") or "available",
+               "min_app_version": "", "plugin_version": version, "page_slug": slug,
+               "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+               "download_url": "https://github.com/nolgiainc/nolgia-adobe/releases/download/adobe-v%s/nolgia-adobe-%s.zxp"
+                               % (version, version)}
+        if catalog.get("release_note"):
+            row["release_note"] = catalog["release_note"]
+        apps.append(row)
+    return h._send(200, {"apps": apps}, headers={"Cache-Control": "public, max-age=60"})
+
+
+@route("POST", r"/mock/desktop-apps")
+def mock_desktop_apps(h):
+    body = h.json()
+    with h.state.cond:
+        h.state.desktop_apps = {k: body[k] for k in ("plugin_version", "release_note", "status", "error") if k in body}
+    return h._send(204)
+
+
 @route("GET", r"/v1/color-presets")
 def list_color_presets(h):
     presets = [{"slug": slug, "name": name, "description": "Mock %s look." % name, "category": category,
@@ -1605,13 +1648,16 @@ def main():
                         help="approve a device code on its Nth poll")
     parser.add_argument("--poll-wait-seconds", type=int, default=MAX_WAIT,
                         help="poll_wait_seconds the session answers (shorter long polls in tests)")
+    parser.add_argument("--desktop-apps-version", default=None,
+                        help="serve GET /desktop-apps with this NOLGIA for Adobe version (the update line)")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     server = MockBridgeServer(args.host, args.port, verbose=args.verbose,
                               tokens=tuple(args.token or ["test-token"]),
                               device_interval=args.device_interval,
                               auto_approve_after=args.auto_approve_after,
-                              poll_wait_seconds=args.poll_wait_seconds)
+                              poll_wait_seconds=args.poll_wait_seconds,
+                              desktop_apps_version=args.desktop_apps_version)
     print("NOLGIA mock API listening on %s" % server.base_url, flush=True)
     try:
         server.httpd.serve_forever()

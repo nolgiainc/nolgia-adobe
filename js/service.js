@@ -103,7 +103,7 @@
   CEP.listen(CEP.ACTION_EVENT, (msg) => {
     if (!msg || typeof msg !== "object") return;
     if (msg.action === "hello") {
-      controller.bump();
+      controller.panelOpened();
       return;
     }
     try {

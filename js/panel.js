@@ -134,6 +134,7 @@
     appLabel.textContent = s.app_name;
     statusText.textContent = s.status;
     dot.className = "dot " + dotClass(s);
+    renderUpdate(s.update);
     // The panel redraws on every change: keep where the person scrolled
     // Activity to (the page keeps its own place).
     const oldList = main.querySelector(".activity");
@@ -296,6 +297,25 @@
     }
     if (!lines.length) return;
     main.appendChild(el("div", { class: "card work", style: "padding:8px 12px; user-select:text" }, lines));
+  }
+
+  // A newer NOLGIA for Adobe is out (core/update.js): one quiet line at the
+  // top. Update opens its page on nolgia.ai; Not now hides it until the next
+  // version. Nothing here stops or waits for anything else in the panel.
+  function renderUpdate(u) {
+    const box = document.getElementById("update");
+    if (!box) return;
+    box.textContent = "";
+    box.classList.toggle("hidden", !u);
+    if (!u) return;
+    box.appendChild(el("div", { class: "update-line", text: u.text }));
+    if (u.note) box.appendChild(el("div", { class: "update-note", text: u.note }));
+    box.appendChild(
+      el("div", { class: "update-buttons" }, [
+        button("Update", () => send("update_open"), "small"),
+        button("Not now", () => send("update_dismiss"), "small quiet"),
+      ])
+    );
   }
 
   // ------------------------------------------------------------------ chat

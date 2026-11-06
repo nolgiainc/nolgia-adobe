@@ -18,7 +18,8 @@
 //   host.openURL(url), host.openPanel(), host.broadcast(state), host.log(text)
 //
 // The panel's chat with NOLGIA Agent (core/chat.js) lives here too, so a
-// turn keeps going when the panel is closed.
+// turn keeps going when the panel is closed, and so does the check for a
+// newer NOLGIA for Adobe (core/update.js).
 
 "use strict";
 
@@ -39,6 +40,7 @@ const dit = require("./dit");
 const transcribe = require("./transcribe");
 const work = require("./work");
 const { AgentChat } = require("./chat");
+const { UpdateCheck } = require("./update");
 
 // Camera log variants of NOLGIA's color presets: "<slug>-<suffix>" is the same
 // look for footage in that log encoding (nolgia-api render/colorgrade).
@@ -108,6 +110,7 @@ class Controller {
     this.hostReady = null;
     this.chatAccepted = 0; // the panel's last send NOLGIA took (it clears the box)
     this.chat = new AgentChat(this.chatOwner(), { clock });
+    this.updates = new UpdateCheck(this.updateOwner(), { clock });
     // Keeping NOLGIA's work safe (After Effects, core/work.js): where it is
     // recorded, when NOLGIA last changed each project in this window (a new
     // stretch of work makes a new backup), and the last thing to tell the
@@ -159,6 +162,24 @@ class Controller {
       bump: () => this.bump(),
       log: (text) => this.log(text),
       authFailed: (text) => this.authFailed(text),
+    };
+  }
+
+  // What the update check needs: the catalog (read without the sign in, so
+  // it works signed out too), the Not now setting and the browser.
+  updateOwner() {
+    const ctl = this;
+    return {
+      get app() {
+        return ctl.app.app;
+      },
+      running: PLUGIN_VERSION,
+      catalog: () => new ApiClient({ baseUrl: ctl.apiUrl(), userAgent: ctl.userAgent() }).listDesktopApps(),
+      dismissed: () => this.settings.get("update_dismissed"),
+      dismiss: (version) => this.settings.set({ update_dismissed: String(version) }),
+      openURL: (url) => this.host.openURL(url),
+      bump: () => this.bump(),
+      log: (text) => this.log(text),
     };
   }
 
@@ -231,6 +252,7 @@ class Controller {
       app: this.app.app,
       app_name: this.app.name,
       plugin_version: PLUGIN_VERSION,
+      update: this.updates.view(),
       status: this.statusLine(),
       state: this.worker ? this.worker.state : this.signedIn ? "off" : "signed_out",
       signed_in: this.signedIn,
@@ -286,6 +308,7 @@ class Controller {
   // After the app starts: reconnect when the person left it on.
   start() {
     this.applyEnv();
+    if (envFlag(this.env, "NOLGIA_UPDATE_CHECK") !== false) this.updates.start();
     const wanted = envFlag(this.env, "NOLGIA_BRIDGE_AUTOCONNECT") || this.settings.get("connected");
     if (wanted && this.signedIn) this.connect();
     else if (this.settings.get("connected")) this.settings.set({ connected: false });
@@ -509,6 +532,10 @@ class Controller {
       this.fixChatBlocker();
     } else if (kind === "chat_wake") {
       this.chat.wake();
+    } else if (kind === "update_open") {
+      this.updates.open();
+    } else if (kind === "update_dismiss") {
+      this.updates.dismiss();
     }
     this.bump();
   }
@@ -1880,8 +1907,15 @@ class Controller {
 
   // ------------------------------------------------------------------- close
 
+  // The panel opened (its hello): a moment to look for a newer plugin.
+  panelOpened() {
+    if (envFlag(this.env, "NOLGIA_UPDATE_CHECK") !== false) this.updates.panelOpened();
+    this.bump();
+  }
+
   shutdown() {
     this.cancelSignIn();
+    this.updates.stop();
     this.chat.reset({ forget: false });
     this.stopSnapshots();
     this.stopHelper();

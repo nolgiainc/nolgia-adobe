@@ -108,6 +108,28 @@ button {
   margin-bottom: 12px;
 }
 
+/* The update line: quiet, above the status, never in the way. */
+.update {
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 11.5px;
+}
+.update .update-line {
+  font-weight: 500;
+}
+.update .update-note {
+  margin-top: 2px;
+  color: var(--muted);
+}
+.update .update-buttons {
+  display: flex;
+  gap: 6px;
+  margin-top: 7px;
+}
+
 .dot {
   flex: none;
   width: 8px;

@@ -206,6 +206,12 @@ class ApiClient {
     return (await this.request("GET", "/me")).json() || {};
   }
 
+  // GET /desktop-apps: NOLGIA's plugins catalog (public, no sign in), with
+  // each app's published plugin version (core/update.js).
+  async listDesktopApps() {
+    return (await this.request("GET", "/desktop-apps", undefined, { auth: false, timeout: 15 })).json() || {};
+  }
+
   // ------------------------------------------------------------------ bridge
 
   async registerSession(payload) {
