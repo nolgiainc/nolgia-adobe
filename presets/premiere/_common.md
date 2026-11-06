@@ -25,6 +25,11 @@ the Film assistant category. The agent works through the NOLGIA Bridge tools
 
 ## While working
 
+- Reach Premiere Pro only through these NOLGIA tools. Never drive it from outside the
+  plugin: no AppleScript or `osascript`, no COM, no Windows UI automation, no
+  simulated keystrokes or clicks, and not any other tool that scripts the app from outside. Those skip the
+  person's Activity list, "Ask before running code" and the plugin's error
+  handling, and a bad call that way can crash Premiere Pro and lose unsaved work.
 - Work in small steps: one `nolgia_app_run` per logical step, each returning a
   short summary in `result` (bin paths, item counts, sequence names). Premiere
   has no undo group for scripts, so each step should be easy to reverse by hand:
@@ -88,7 +93,8 @@ the Film assistant category. The agent works through the NOLGIA Bridge tools
   `nolgia_text_to_audio` or `nolgia_text_to_image` and bring it in with
   `nolgia_app_import`.
 - These generations cost credits: say what you are about to make and roughly
-  what it costs before you run it. Work in Premiere itself is free.
+  what it costs before you run it. Work in Premiere itself adds no generation
+  cost.
 
 ## Finishing
 

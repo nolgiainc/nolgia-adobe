@@ -37,6 +37,7 @@ const { BridgeWorker, Status } = require("./worker");
 const util = require("./util");
 const dit = require("./dit");
 const transcribe = require("./transcribe");
+const work = require("./work");
 const { AgentChat } = require("./chat");
 
 // Camera log variants of NOLGIA's color presets: "<slug>-<suffix>" is the same
@@ -107,6 +108,18 @@ class Controller {
     this.hostReady = null;
     this.chatAccepted = 0; // the panel's last send NOLGIA took (it clears the box)
     this.chat = new AgentChat(this.chatOwner(), { clock });
+    // Keeping NOLGIA's work safe (After Effects, core/work.js): where it is
+    // recorded, when NOLGIA last changed each project in this window (a new
+    // stretch of work makes a new backup), and the last thing to tell the
+    // person about it.
+    this.work = new work.WorkRecord(path.join(this.dir, "work.json"), clock);
+    this.lastChange = new Map();
+    this.workNotice = null;
+    this.workCache = null;
+    // A host call NOLGIA stopped waiting for: the app is still busy with it,
+    // and anything sent now would only queue behind it.
+    this.lateCall = null;
+    this.pendingSave = null;
   }
 
   // What the chat needs from the plugin. The instance id is the one the
@@ -183,6 +196,7 @@ class Controller {
     for (const [env, key] of [
       ["NOLGIA_ASK_BEFORE_RUN", "ask_before_run"],
       ["NOLGIA_ALLOW_AGENT", "allow_agent"],
+      ["NOLGIA_SAVE_AFTER_CHANGE", "save_after_change"],
     ]) {
       const flag = envFlag(this.env, env);
       if (flag !== null) this.settings.set({ [key]: flag });
@@ -226,6 +240,8 @@ class Controller {
       connected: this.settings.get("connected"),
       allow_agent: this.settings.get("allow_agent"),
       ask_before_run: this.settings.get("ask_before_run"),
+      save_after_change: this.settings.get("save_after_change"),
+      work: this.workState(),
       approvals: this.approvals.map((p) => ({
         id: p.id,
         title: p.title,
@@ -537,7 +553,7 @@ class Controller {
     if (name === "connected") {
       if (value) this.connect();
       else this.disconnect();
-    } else if (name === "allow_agent" || name === "ask_before_run") {
+    } else if (name === "allow_agent" || name === "ask_before_run" || name === "save_after_change") {
       this.settings.set({ [name]: value });
       if (name === "allow_agent") {
         this.snapshot.allow_agent = value;
@@ -613,17 +629,301 @@ class Controller {
     this.bump();
     try {
       const runner = this["do_" + command.kind];
-      const result = await runner.call(this, command, api, killed);
-      return { ok: true, result };
+      // A change to the project: backed up before, saved in place after
+      // (After Effects with Save after NOLGIA's changes on).
+      const keep = this.keepsWork() && changesProject(command) ? await this.beforeChange(command) : null;
+      let result = null;
+      let failure = null;
+      try {
+        result = await runner.call(this, command, api, killed);
+      } catch (err) {
+        failure = err;
+      }
+      const kept = keep ? await this.afterChange(command, keep, failure) : null;
+      if (failure) {
+        if (kept && failure instanceof CommandError) failure.result = Object.assign({}, failure.result || {}, kept);
+        throw failure;
+      }
+      return { ok: true, result: kept ? Object.assign({}, result, kept) : result };
     } finally {
       this.updateSnapshot(true).catch(() => {});
       this.bump();
     }
   }
 
+  // ---- keeping NOLGIA's work (After Effects)
+
+  keepsWork() {
+    return this.app.app === "after_effects" && Boolean(this.settings.get("save_after_change"));
+  }
+
+  documentsDir() {
+    return this.host.documents || path.join(os.homedir(), "Documents");
+  }
+
+  projectsDir() {
+    return this.env.NOLGIA_PROJECTS_DIR || path.join(this.documentsDir(), work.PROJECTS_FOLDER);
+  }
+
+  // A new stretch of work on this project: NOLGIA has not changed it in this
+  // window yet, or not for QUIET_GAP seconds.
+  needsBackup(file) {
+    const last = this.lastChange.get(work.pathKey(file));
+    return last === undefined || this.clock() - last > work.QUIET_GAP;
+  }
+
+  tellWork(text, problem = false) {
+    this.workNotice = { text, problem, at: this.clock() };
+    this.workCache = null;
+    this.log(text);
+    this.bump();
+  }
+
+  // Before a change: a project that was never saved is saved into NOLGIA
+  // projects; otherwise, at the start of a stretch of work, a byte copy of
+  // the project file goes into NOLGIA backups (and when it has unsaved
+  // changes, it is saved and copied again, so a backup holds exactly the
+  // project before NOLGIA's change). Never throws: what it could not do is
+  // in `notes`, and `noSave` stops NOLGIA from saving over a file it could
+  // not back up.
+  async beforeChange(command) {
+    const keep = { file: null, backups: [], notes: [], noSave: false, untitled: null };
+    let info;
+    try {
+      info = await this.hostOrFail("project_file", {}, command);
+    } catch (err) {
+      keep.noSave = true;
+      keep.notes.push("NOLGIA could not ask " + this.app.name + " which project is open (" + errorText(err) + "), so it does not save after this change.");
+      return keep;
+    }
+    const now = this.clock();
+    if (!info.path) {
+      let target = null;
+      try {
+        target = work.untitledTarget(this.projectsDir(), now, "." + this.app.projectExt);
+        const saved = await this.hostOrFail("save", { path: target }, command);
+        keep.file = saved.path || target;
+        keep.untitled = keep.file;
+        this.lastChange.set(work.pathKey(keep.file), now);
+        this.work.noteSave(keep.file, "untitled");
+        this.tellWork(
+          "This project had never been saved, so NOLGIA saved it as " + keep.file + " before changing it, and saves it " +
+            "there after each change. Use File > Save As to give it another name or place."
+        );
+        keep.notes.push("The project had never been saved: NOLGIA saved it as " + keep.file + " (tell the person where it is).");
+      } catch (err) {
+        keep.noSave = true;
+        const where = target ? path.dirname(target) : this.projectsDir();
+        keep.notes.push(
+          "This project has never been saved, and NOLGIA could not save it into " + where + " (" + errorText(err) +
+            "), so it is not saved after this change: the person should save it with File > Save As."
+        );
+        this.tellWork(keep.notes[keep.notes.length - 1], true);
+      }
+      return keep;
+    }
+    keep.file = info.path;
+    if (!fs.existsSync(info.path)) {
+      // Its file is gone from the disk (moved or deleted): saving puts it
+      // back and writes over nothing.
+      this.lastChange.set(work.pathKey(info.path), now);
+    } else if (this.needsBackup(info.path)) {
+      try {
+        keep.backups.push(work.backupProject(info.path, this.documentsDir(), now));
+      } catch (err) {
+        keep.noSave = true;
+        keep.notes.push(
+          "NOLGIA could not back up " + path.basename(info.path) + " (" + errorText(err) + "), so it does not save over it " +
+            "after this change: the person can save with File > Save when they want to keep it."
+        );
+        this.tellWork(keep.notes[keep.notes.length - 1], true);
+        return keep;
+      }
+      if (info.dirty === true) {
+        // The person's own unsaved changes: saved, then copied too, so the
+        // backup is the project exactly as it was before NOLGIA's change.
+        try {
+          await this.hostOrFail("save", {}, command);
+          await waitForFile(info.path, 10);
+          keep.backups.push(work.backupProject(info.path, this.documentsDir(), now, "with unsaved changes"));
+        } catch (err) {
+          keep.notes.push("The backup has the project as last saved; its unsaved changes could not be added (" + errorText(err) + ").");
+        }
+      }
+      for (const b of keep.backups) this.work.noteBackup(info.path, b);
+      this.lastChange.set(work.pathKey(info.path), now);
+      this.tellWork("Backed up " + path.basename(info.path) + " before NOLGIA's change: " + keep.backups[keep.backups.length - 1] + ".");
+    } else if (info.dirty === true) {
+      // Changes since NOLGIA's last save (the person's own): saved before
+      // NOLGIA changes more, so a crash during the change cannot lose them.
+      try {
+        await this.hostOrFail("save", {}, command);
+      } catch (err) {
+        keep.notes.push("The project's unsaved changes could not be saved before this change (" + errorText(err) + ").");
+      }
+    }
+    return keep;
+  }
+
+  // After a change (done or failed): the project saved in place, never Save
+  // As. Resolves what the result carries: saved {path, at}, backups, notes.
+  async afterChange(command, keep, failure) {
+    const out = {};
+    if (keep.backups.length) out.backups = keep.backups.slice();
+    const step = { kind: command.kind, ok: !failure };
+    if (command.kind === "run") step.code = command.args.code;
+    if (command.args.asset_id) step.asset_id = command.args.asset_id;
+    if (failure) step.error = errorText(failure);
+    const done = () => {
+      if (keep.notes.length) out.notes = keep.notes.slice();
+      if (keep.file) this.work.noteStep(keep.file, step);
+      this.workCache = null;
+      this.bump();
+      return out;
+    };
+    if (keep.noSave || !keep.file) {
+      step.saved = false;
+      return done();
+    }
+    if (this.lateCall) {
+      // The code is still running in the app: saving now would only queue
+      // behind it. The project is saved once it ends.
+      step.saved = false;
+      keep.notes.push("The code is still running in " + this.app.name + "; NOLGIA saves the project as soon as it ends.");
+      this.saveWhenFree(keep.file);
+      return done();
+    }
+    let info;
+    try {
+      info = await this.hostOrFail("project_file", {}, command);
+    } catch (err) {
+      step.saved = false;
+      keep.notes.push("NOLGIA could not save after this change (" + errorText(err) + ").");
+      if (this.lateCall) this.saveWhenFree(keep.file);
+      return done();
+    }
+    if (!info.path) {
+      step.saved = false;
+      keep.notes.push("The project has no file now (the change closed it or started a new one), so NOLGIA did not save it.");
+      return done();
+    }
+    if (work.pathKey(info.path) !== work.pathKey(keep.file)) {
+      // The change moved the project onto another file (Save As or an
+      // open in the code): that file is backed up before NOLGIA saves over it.
+      const moved = await this.beforeChange(command);
+      if (moved.backups.length) out.backups = (out.backups || []).concat(moved.backups);
+      keep.notes.push(...moved.notes);
+      keep.file = info.path;
+      if (moved.noSave) {
+        step.saved = false;
+        return done();
+      }
+    }
+    if (info.dirty === false) {
+      out.saved = { path: info.path, at: isoTime(this.clock()), unchanged: true };
+    } else {
+      try {
+        const saved = await this.hostOrFail("save", {}, command);
+        out.saved = { path: saved.path || info.path, at: isoTime(this.clock()) };
+        this.work.noteSave(info.path, "after " + command.kind);
+      } catch (err) {
+        step.saved = false;
+        keep.notes.push("NOLGIA could not save " + path.basename(info.path) + " after this change (" + errorText(err) + ").");
+        this.tellWork(keep.notes[keep.notes.length - 1], true);
+        if (this.lateCall) this.saveWhenFree(info.path);
+      }
+    }
+    this.lastChange.set(work.pathKey(info.path), this.clock());
+    return done();
+  }
+
+  // Save `file` in place once the app is free of the host call NOLGIA
+  // stopped waiting for.
+  saveWhenFree(file) {
+    const late = this.lateCall;
+    if (!late || this.pendingSave) return;
+    this.pendingSave = late
+      .then(async () => {
+        const info = await this.callHostTimed("project_file", {}, 60);
+        const r = info && info.ok ? info.result || {} : {};
+        if (!r.path || work.pathKey(r.path) !== work.pathKey(file) || r.dirty === false) return;
+        const out = await this.callHostTimed("save", {}, 300);
+        if (out && out.ok) {
+          this.work.noteSave(file, "after the code ended");
+          this.tellWork("Saved " + path.basename(file) + " once NOLGIA's code ended.");
+        } else {
+          this.tellWork("NOLGIA could not save " + path.basename(file) + " after its code ended (" + ((out && out.error) || "no answer") + ").", true);
+        }
+      })
+      .catch(() => {})
+      .then(() => {
+        this.pendingSave = null;
+      });
+  }
+
+  // What the panel shows about NOLGIA's work in After Effects.
+  workState() {
+    if (this.app.app !== "after_effects") return null;
+    const open = (this.snapshot.document && this.snapshot.document.path) || "";
+    if (!this.workCache || this.workCache.open !== open) {
+      let last = null;
+      try {
+        last = this.work.summary(open);
+      } catch (e) {
+        last = null;
+      }
+      this.workCache = { open, last };
+    }
+    const last = this.workCache.last;
+    return {
+      save_after_change: Boolean(this.settings.get("save_after_change")),
+      notice: this.workNotice,
+      last: last
+        ? {
+            project: last.project,
+            name: path.basename(last.project),
+            exists: last.exists,
+            open_now: Boolean(last.open_now),
+            saved_at: last.saved_at,
+            backup: last.backups.length ? last.backups[0].path : null,
+            backup_at: last.backups.length ? last.backups[0].at : null,
+            unsaved_steps: last.unsaved_steps || 0,
+          }
+        : null,
+    };
+  }
+
+  // The same for the agent, in nolgia_app_info.
+  workForAgent(open) {
+    let last = null;
+    try {
+      last = this.work.summary(open || "");
+    } catch (e) {
+      last = null;
+    }
+    const out = { save_after_change: this.keepsWork() };
+    if (!last) return Object.assign(out, { last: null });
+    out.last = {
+      project: last.project,
+      exists: last.exists,
+      open_now: Boolean(last.open_now),
+      saved_at: last.saved_at ? isoTime(last.saved_at) : null,
+      backups: last.backups.map((b) => ({ path: b.path, at: isoTime(b.at) })),
+      steps: last.steps,
+    };
+    if (last.unsaved_steps) out.last.unsaved_steps = last.unsaved_steps;
+    if (!last.open_now && last.exists) {
+      out.last.note =
+        "NOLGIA's last work is in " + last.project + ", not in the project open now. After a crash, After Effects may have " +
+        "opened its own crash copy (a name ending in _1): ask the person before opening the other file with nolgia_app_open.";
+    }
+    return out;
+  }
+
   // App side of a command. Throws CommandError with the app's message.
   async hostOrFail(kind, args, command, { waitFor = null } = {}) {
     const deadline = command ? command.deadline : null;
+    await this.waitForLateCall(command);
     const call = this.callHost(kind, args);
     let out;
     if (deadline !== null) {
@@ -637,6 +937,7 @@ class Controller {
       out = await Promise.race([call, late]);
       util.timers.clearTimeout(timer);
       if (out && out.late) {
+        this.markLate(call);
         throw new CommandError(
           this.app.name + " is still busy with this after " + Math.round(command.timeout) +
             " s, so NOLGIA stopped waiting. It may still finish in " + this.app.name +
@@ -648,6 +949,41 @@ class Controller {
     }
     if (!out.ok) throw new CommandError(out.error || this.app.name + " could not do this.", out.result || null);
     return out.result || {};
+  }
+
+  // A host call outlived its command: remember it until it ends, so the
+  // next commands wait for it instead of queueing behind it in the app.
+  markLate(call) {
+    const tracked = Promise.resolve(call)
+      .catch(() => {})
+      .then(() => {
+        if (this.lateCall === tracked) this.lateCall = null;
+      });
+    this.lateCall = tracked;
+  }
+
+  // Wait (within the command's own time) for a host call NOLGIA stopped
+  // waiting for. Previews and code sent while the app is still busy would
+  // only pile up behind it.
+  async waitForLateCall(command) {
+    if (!this.lateCall) return;
+    if (!command) {
+      await this.lateCall;
+      return;
+    }
+    const late = this.lateCall;
+    let timer = null;
+    const timeout = new Promise((resolve) => {
+      timer = util.timers.setTimeout(() => resolve("busy"), Math.max(1, command.remaining() - 5) * 1000);
+    });
+    const outcome = await Promise.race([late.then(() => "free"), timeout]);
+    util.timers.clearTimeout(timer);
+    if (outcome === "busy") {
+      throw new CommandError(
+        this.app.name + " is still busy with an earlier command NOLGIA stopped waiting for, so this one did not start " +
+          "(it would only queue behind it). Try again once that finishes; nolgia_app_status shows when the app answers."
+      );
+    }
   }
 
   // ---- approvals
@@ -982,6 +1318,8 @@ class Controller {
     const info = Object.assign({ app: this.app.app }, result);
     // The same label as the session's check in ("26.5 (build 89)", not After Effects' own "26.5x89").
     if ("app_version" in info) info.app_version = util.appVersionLabel(info.app_version);
+    // Where NOLGIA's saved work and backups are (After Effects).
+    if (this.app.app === "after_effects") info.nolgia_work = this.workForAgent(info.document && info.document.path);
     return info;
   }
 
@@ -1012,6 +1350,7 @@ class Controller {
   // code outlives its time. ExtendScript cannot be stopped from outside, so
   // this stops waiting; the app finishes the code on its own.
   async callHostWithDeadline(kind, args, command, timeoutSeconds) {
+    await this.waitForLateCall(command);
     let seconds = Math.max(1, command.remaining());
     if (timeoutSeconds) seconds = Math.min(seconds, timeoutSeconds);
     const call = this.callHost(kind, args);
@@ -1022,6 +1361,7 @@ class Controller {
     const out = await Promise.race([call, late]);
     util.timers.clearTimeout(timer);
     if (out && out.late) {
+      this.markLate(call);
       throw new CommandError(
         "The code was still running after " + Math.round(seconds) + " s, so NOLGIA stopped waiting. " +
           this.app.name + " cannot stop ExtendScript from outside, so it may still finish there; " +
@@ -1047,6 +1387,7 @@ class Controller {
         command
       );
       const source = await waitForFile(shot.path, Math.max(5, command.remaining()));
+      const rendered = pngSize(source);
       const width = args.width || Math.min(PREVIEW_DEFAULT_WIDTH, shot.width || PREVIEW_DEFAULT_WIDTH);
       const small = await this.fitImage(source, folder, "preview", width, shot.background);
       const stem = util.safeFilename(path.parse(this.snapshot.document.name || "untitled").name, "untitled");
@@ -1059,6 +1400,12 @@ class Controller {
       const out = { asset_id: asset.id, width: small.width, height: small.height, mime_type: small.mime };
       for (const key of ["comp", "sequence", "artboard", "frame", "time", "source"]) {
         if (shot[key] !== undefined && shot[key] !== null) out[key] = shot[key];
+      }
+      // How big the app rendered it (After Effects renders a preview at a
+      // lower resolution that still covers the width asked).
+      if (rendered) {
+        out.rendered = { width: rendered.width, height: rendered.height };
+        if (shot.resolution_factor) out.rendered.resolution_factor = shot.resolution_factor;
       }
       return out;
     } finally {
@@ -1361,15 +1708,17 @@ class Controller {
 
   // aep, prproj, ai: a copy of the project on this computer, never over a
   // file. The copy is the project as last saved; an untitled project is
-  // saved into Documents/NOLGIA exports first.
+  // saved into Documents/NOLGIA projects first.
   async exportProjectCopy(command) {
     const args = command.args;
     const ext = "." + this.app.projectExt;
     const info = await this.hostOrFail("project_file", {}, command);
     if (!info.path) {
-      const folder = this.exportDir();
+      const folder = this.projectsDir();
       fs.mkdirSync(folder, { recursive: true });
-      const target = this.freePath(folder, args.filename ? this.stem(args.filename) : "untitled", ext);
+      const target = args.filename
+        ? this.freePath(folder, this.stem(args.filename), ext)
+        : work.untitledTarget(folder, this.clock(), ext);
       const saved = await this.hostOrFail("save", { path: target }, command);
       return {
         asset_id: null,
@@ -1444,17 +1793,71 @@ class Controller {
     return target;
   }
 
+  // Save never moves the open project to another file unless save_as asks
+  // for it by name: with a path, the project is saved in place and a byte
+  // copy is written at the path (never over a file). A project that was
+  // never saved is saved at the path (or into Documents/NOLGIA projects),
+  // and stays open from there. Save As over an existing file backs that
+  // file up first.
   async do_save(command) {
-    const p = command.args.path;
-    if (!p) return this.hostOrFail("save", {}, command);
-    let target = this.resolvePath(p);
+    const a = command.args;
+    const info = await this.hostOrFail("project_file", {}, command);
+    const open = info.path || null;
+    const openIsProject = Boolean(open) && this.app.projectExts.includes(path.extname(open).slice(1).toLowerCase());
+    if (!a.path) {
+      if (open) return this.savedInPlace(await this.hostOrFail("save", {}, command), open);
+      const target = work.untitledTarget(this.projectsDir(), this.clock(), "." + this.app.projectExt);
+      const saved = await this.hostOrFail("save", { path: target }, command);
+      return {
+        path: saved.path || target,
+        note:
+          "The " + this.app.projectWord + " had never been saved, so it is saved in " + path.dirname(target) +
+          " and stays open from that file. Tell the person where it is.",
+      };
+    }
+    let target = this.resolvePath(a.path);
     const ext = path.extname(target).slice(1).toLowerCase();
     if (!this.app.projectExts.includes(ext)) target += "." + this.app.projectExt;
     if (fs.existsSync(target) && fs.statSync(target).isDirectory()) {
       throw new CommandError(target + " is a folder. Give a file name ending in ." + this.app.projectExt + ".");
     }
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    return this.hostOrFail("save", { path: target }, command);
+    if (openIsProject && work.pathKey(target) === work.pathKey(open)) {
+      return this.savedInPlace(await this.hostOrFail("save", {}, command), open);
+    }
+    if (a.save_as || !openIsProject) {
+      // Save As, asked for by name or for a project with no project file:
+      // the open project moves to the target.
+      const out = {};
+      if (fs.existsSync(target)) {
+        out.backup_of_replaced = work.backupProject(target, this.documentsDir(), this.clock(), "replaced by Save As");
+      }
+      const saved = await this.hostOrFail("save", { path: target }, command);
+      out.path = saved.path || target;
+      out.note = open
+        ? "Saved as " + out.path + ": the " + this.app.projectWord + " is now open from that file; " + open + " is as it was last saved."
+        : "The " + this.app.projectWord + " is saved as " + out.path + " and stays open from that file.";
+      if (out.backup_of_replaced) out.note += " The file it replaced is backed up at " + out.backup_of_replaced + ".";
+      return out;
+    }
+    const saved = this.savedInPlace(await this.hostOrFail("save", {}, command), open);
+    await waitForFile(open, 10);
+    const copyTo = fs.existsSync(target)
+      ? work.freePath(path.dirname(target), path.basename(target, path.extname(target)), path.extname(target))
+      : target;
+    work.copyNew(open, copyTo);
+    saved.copy = copyTo;
+    saved.note =
+      "Saved in place, and a copy is at " + copyTo + (copyTo !== target ? " (" + target + " already exists, so it is not replaced)" : "") +
+      ". The " + this.app.projectWord + " stays open from " + open + ". To move it to the other file instead, save with save_as: true.";
+    return saved;
+  }
+
+  savedInPlace(result, open) {
+    const out = Object.assign({}, result);
+    out.path = out.path || open;
+    if (this.app.app === "after_effects") this.work.noteSave(out.path, "save");
+    return out;
   }
 
   async do_open(command) {
@@ -1549,6 +1952,37 @@ function transcriptView(clip, entry, file, withWords) {
   if (entry.made_now) view.made_now = true;
   for (const key of ["asset_id", "credits_charged"]) if (entry[key] !== undefined) view[key] = entry[key];
   return view;
+}
+
+// Commands that change the project: code, and bringing a file in.
+function changesProject(command) {
+  if (command.kind === "run") return true;
+  return command.kind === "import_asset" && !command.args.color_preset;
+}
+
+function errorText(err) {
+  return String((err && err.message) || err || "unknown error").slice(0, 300);
+}
+
+function isoTime(seconds) {
+  return new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+// The size of a PNG from its header, or null.
+function pngSize(file) {
+  try {
+    const fd = fs.openSync(file, "r");
+    try {
+      const head = Buffer.alloc(24);
+      fs.readSync(fd, head, 0, 24, 0);
+      if (head.readUInt32BE(0) !== 0x89504e47 || head.toString("latin1", 12, 16) !== "IHDR") return null;
+      return { width: head.readUInt32BE(16), height: head.readUInt32BE(20) };
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (e) {
+    return null;
+  }
 }
 
 function nolgiaError(err) {

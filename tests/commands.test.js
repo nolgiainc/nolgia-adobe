@@ -101,7 +101,9 @@ test("parseFrames reads every form the agent may send", () => {
 });
 
 test("save and open", () => {
-  assert.deepEqual(c.validate(AE, "save", {}), { path: null });
+  assert.deepEqual(c.validate(AE, "save", {}), { path: null, save_as: false });
+  assert.deepEqual(c.validate(AE, "save", { path: "v2", save_as: true }), { path: "v2", save_as: true });
+  assert.throws(() => c.validate(AE, "save", { save_as: "yes" }), /`save_as` must be true or false/);
   assert.deepEqual(c.validate(AE, "open", { path: "C:/x.aep" }), { path: "C:/x.aep" });
   assert.throws(() => c.validate(AE, "open", {}), /`path` is required/);
 });

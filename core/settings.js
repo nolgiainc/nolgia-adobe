@@ -25,6 +25,9 @@ const DEFAULTS = {
   connected: false,
   allow_agent: true,
   ask_before_run: false,
+  // After Effects: back up the project before NOLGIA's first change and save
+  // it in place after each change NOLGIA makes (core/work.js).
+  save_after_change: true,
 };
 
 const ENV_KEYS = [
@@ -33,6 +36,8 @@ const ENV_KEYS = [
   "NOLGIA_BRIDGE_AUTOCONNECT",
   "NOLGIA_ASK_BEFORE_RUN",
   "NOLGIA_ALLOW_AGENT",
+  "NOLGIA_SAVE_AFTER_CHANGE",
+  "NOLGIA_PROJECTS_DIR",
   "NOLGIA_INSTANCE_ID",
   "NOLGIA_EXPORT_DIR",
   "NOLGIA_PREVIEW_MAX_BYTES",

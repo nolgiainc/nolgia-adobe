@@ -70,10 +70,48 @@ function fakeHost(handlers = {}, hostId = "AEFT") {
   return host;
 }
 
-function controllerFor(host, env = {}) {
+function controllerFor(host, env = {}, clock = undefined) {
   return new Controller(host, {
     environ: Object.assign({ NOLGIA_TOKEN: support.TOKEN, NOLGIA_API_URL: server.base, NOLGIA_BRIDGE_AUTOCONNECT: "1" }, env),
+    clock,
   });
+}
+
+// An After Effects project as the plugin sees it: a file on disk (or none
+// yet), what is in memory, and whether that is saved. save without a path
+// saves in place; with a path it is Save As (the open project moves).
+// `code` is what a run makes the project hold; "boom" fails after changing it.
+function aeProject(file, { dirty = false, onDisk = "as saved", inMemory = null } = {}) {
+  const p = { file, dirty, memory: inMemory || onDisk, saves: [] };
+  if (file) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, onDisk);
+  }
+  p.handlers = {
+    snapshot: () => ({ document: p.file ? { name: path.basename(p.file), path: p.file } : { name: "" }, dirty: p.dirty }),
+    project_file: () => ({ path: p.file, dirty: p.dirty }),
+    info: () => ({ app_version: "25.6x101", document: p.file ? { name: path.basename(p.file), path: p.file, dirty: p.dirty } : { name: "" } }),
+    save: (args) => {
+      if (args.path) p.file = args.path;
+      if (!p.file) throw new Error("This project has never been saved");
+      fs.writeFileSync(p.file, p.memory);
+      p.dirty = false;
+      p.saves.push(args.path ? "save as " + path.basename(args.path) : "in place");
+      return { path: p.file };
+    },
+    run: async (args) => {
+      if (args.code.startsWith("slow:")) await new Promise((r) => setTimeout(r, Number(args.code.slice(5))));
+      p.memory = args.code;
+      p.dirty = true;
+      if (args.code === "boom") {
+        const err = new Error("TypeError on line 1: boom");
+        err.result = { value: null, stdout: "", stderr: "" };
+        throw err;
+      }
+      return { value: 1, stdout: "", stderr: "" };
+    },
+  };
+  return p;
 }
 
 async function connected(ctl) {
@@ -103,7 +141,13 @@ test("starts connected from NOLGIA_TOKEN and answers info", async () => {
   const cmd = await command("info");
   assert.equal(cmd.status, "succeeded");
   // After Effects says "25.6x101"; the info result reads it the same way the session does.
-  assert.deepEqual(cmd.result, { app: "after_effects", app_version: "25.6 (build 101)", comps: [] });
+  // nolgia_work: where NOLGIA's saved work and backups are (nothing yet).
+  assert.deepEqual(cmd.result, {
+    app: "after_effects",
+    app_version: "25.6 (build 101)",
+    comps: [],
+    nolgia_work: { save_after_change: true, last: null },
+  });
   // The activity says Done once NOLGIA has answered the result, a moment after it stored it.
   await support.until(() => ctl.state().activity[0].label === "Done", 10, "activity done");
   const st = ctl.state();
@@ -116,7 +160,7 @@ test("starts connected from NOLGIA_TOKEN and answers info", async () => {
 });
 
 test("the panel is told when a command finishes, not only when the next one starts", async () => {
-  const host = fakeHost({ save: () => ({ path: "C:\\shots\\shot.aep" }) });
+  const host = fakeHost({ save: () => ({ path: "C:\\shots\\shot.aep" }), project_file: () => ({ path: "C:\\shots\\shot.aep", dirty: true }) });
   const ctl = await connected(controllerFor(host, { NOLGIA_ASK_BEFORE_RUN: "0" }));
   // A real network takes longer to accept the result than the panel's 50 ms
   // repaint delay; slow the mock down the same way.
@@ -150,7 +194,8 @@ test("run returns value and output, and code errors come back with them", async 
       return { value: { n: 2 }, stdout: "hi\n", stderr: "" };
     },
   });
-  const ctl = await connected(controllerFor(host));
+  // (Saving after a change has its own tests below.)
+  const ctl = await connected(controllerFor(host, { NOLGIA_SAVE_AFTER_CHANGE: "0" }));
   const ok = await command("run", { code: "1+1" });
   assert.deepEqual(ok.result, { value: { n: 2 }, stdout: "hi\n", stderr: "" });
   const bad = await command("run", { code: "boom" });
@@ -394,15 +439,18 @@ test("save resolves paths next to the project; open over unsaved changes asks fi
   const folder = support.tempDir();
   const other = path.join(folder, "other.aep");
   fs.writeFileSync(other, "x");
-  const host = fakeHost({
-    snapshot: () => ({ document: { name: "shot.aep", path: path.join(folder, "shot.aep") }, dirty: true }),
-    save: (args) => ({ path: args.path || path.join(folder, "shot.aep") }),
-    open_check: () => ({ loses_changes: true }),
-    open: (args) => ({ path: args.path }),
-  });
+  const project = aeProject(path.join(folder, "shot.aep"), { dirty: true });
+  const host = fakeHost(
+    Object.assign(project.handlers, {
+      open_check: () => ({ loses_changes: true }),
+      open: (args) => ({ path: args.path }),
+    })
+  );
   const ctl = await connected(controllerFor(host));
   assert.equal((await command("save", {})).result.path, path.join(folder, "shot.aep"));
-  assert.equal((await command("save", { path: "v2" })).result.path, path.join(folder, "v2.aep"));
+  const v2 = (await command("save", { path: "v2" })).result;
+  assert.equal(v2.path, path.join(folder, "shot.aep"), "the project stays on its own file");
+  assert.equal(v2.copy, path.join(folder, "v2.aep"));
   const pending = command("open", { path: other });
   await support.until(() => ctl.approvals.length === 1, 10, "approval");
   assert.equal(ctl.approvals[0].approveLabel, "Open and lose changes");
@@ -478,4 +526,234 @@ test("Pause switches off and on; a refused token signs out", async () => {
   await support.until(() => !bad.worker && bad.message, 10, "signed out");
   assert.equal(bad.message, "NOLGIA did not accept your sign in. Sign in again.");
   assert.equal(bad.signedIn, false);
+});
+
+test("a change backs the project up first and saves it in place after, never Save As", async () => {
+  const folder = support.tempDir();
+  const file = path.join(folder, "shot.aep");
+  const project = aeProject(file);
+  const host = fakeHost(project.handlers);
+  let now = Date.UTC(2026, 10, 6, 1, 4, 41) / 1000;
+  const ctl = await connected(controllerFor(host, {}, () => now));
+  try {
+    const first = await command("run", { code: "keyed" });
+    assert.equal(first.status, "succeeded", first.error);
+    assert.equal(first.result.value, 1);
+    assert.equal(first.result.saved.path, file);
+    assert.equal(first.result.backups.length, 1);
+    const backup = first.result.backups[0];
+    assert.equal(path.dirname(backup), path.join(folder, "NOLGIA backups"));
+    assert.equal(fs.readFileSync(backup, "utf8"), "as saved", "the backup is the project before NOLGIA's change");
+    assert.equal(fs.readFileSync(file, "utf8"), "keyed", "the change is saved in the person's own file");
+    assert.deepEqual(project.saves, ["in place"]);
+
+    // The same stretch of work: saved again, no second backup.
+    now += 60;
+    const second = await command("run", { code: "graded" });
+    assert.equal(second.result.backups, undefined);
+    assert.equal(fs.readFileSync(file, "utf8"), "graded");
+    // A failed run may have changed things before it failed: saved too.
+    now += 60;
+    const failed = await command("run", { code: "boom" });
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.error, "TypeError on line 1: boom");
+    assert.equal(failed.result.saved.path, file);
+    assert.equal(fs.readFileSync(file, "utf8"), "boom");
+    assert.deepEqual(project.saves, ["in place", "in place", "in place"]);
+    assert.ok(!project.saves.some((s) => s.startsWith("save as")), "never Save As");
+
+    // After ten quiet minutes the next change makes a new backup.
+    now += 11 * 60;
+    const later = await command("run", { code: "later" });
+    assert.equal(later.result.backups.length, 1);
+    assert.equal(fs.readFileSync(later.result.backups[0], "utf8"), "boom");
+
+    // Where the work is, for the agent and for the panel.
+    const info = await command("info");
+    const w = info.result.nolgia_work;
+    assert.equal(w.save_after_change, true);
+    assert.equal(w.last.project, file);
+    assert.equal(w.last.open_now, true);
+    assert.equal(w.last.backups[0].path, later.result.backups[0]);
+    assert.equal(w.last.steps, 4);
+    const panel = ctl.state().work;
+    assert.equal(panel.last.name, "shot.aep");
+    assert.equal(panel.last.backup, later.result.backups[0]);
+  } finally {
+    await finish(ctl);
+  }
+});
+
+test("unsaved changes from before NOLGIA are saved and kept in a second backup", async () => {
+  const folder = support.tempDir();
+  const file = path.join(folder, "shot.aep");
+  const project = aeProject(file, { dirty: true, onDisk: "as saved", inMemory: "his own edit" });
+  const ctl = await connected(controllerFor(fakeHost(project.handlers)));
+  try {
+    const done = await command("run", { code: "keyed" });
+    assert.equal(done.status, "succeeded", done.error);
+    const [asSaved, withEdits] = done.result.backups;
+    assert.equal(fs.readFileSync(asSaved, "utf8"), "as saved");
+    assert.match(path.basename(withEdits), /\(with unsaved changes\)\.aep$/);
+    assert.equal(fs.readFileSync(withEdits, "utf8"), "his own edit");
+    assert.equal(fs.readFileSync(file, "utf8"), "keyed");
+  } finally {
+    await finish(ctl);
+  }
+});
+
+test("a project that was never saved is saved into NOLGIA projects, and the person is told", async () => {
+  const project = aeProject(null);
+  const host = fakeHost(project.handlers);
+  const ctl = await connected(controllerFor(host));
+  try {
+    const done = await command("run", { code: "a comp" });
+    assert.equal(done.status, "succeeded", done.error);
+    const folder = path.join(host.documents, "NOLGIA projects");
+    assert.equal(path.dirname(done.result.saved.path), folder);
+    assert.match(path.basename(done.result.saved.path), /^Untitled \d{4}-\d\d-\d\d \d\d-\d\d-\d\d\.aep$/);
+    assert.equal(fs.readFileSync(done.result.saved.path, "utf8"), "a comp");
+    assert.match(done.result.notes[0], /had never been saved: NOLGIA saved it as .*NOLGIA projects/);
+    assert.match(ctl.state().work.notice.text, /saved it as .*Untitled/);
+    assert.deepEqual(project.saves, [project.saves[0], "in place"]);
+    assert.match(project.saves[0], /^save as Untitled /);
+  } finally {
+    await finish(ctl);
+  }
+});
+
+test("with Save after NOLGIA's changes off nothing is saved or backed up", async () => {
+  const folder = support.tempDir();
+  const project = aeProject(path.join(folder, "shot.aep"));
+  const ctl = await connected(controllerFor(fakeHost(project.handlers), { NOLGIA_SAVE_AFTER_CHANGE: "0" }));
+  try {
+    const done = await command("run", { code: "keyed" });
+    assert.equal(done.status, "succeeded");
+    assert.equal(done.result.saved, undefined);
+    assert.deepEqual(project.saves, []);
+    assert.ok(!fs.existsSync(path.join(folder, "NOLGIA backups")));
+    assert.equal(ctl.state().work.save_after_change, false);
+  } finally {
+    await finish(ctl);
+  }
+});
+
+test("when no backup can be made, NOLGIA does not save over the project", async () => {
+  const folder = support.tempDir();
+  const project = aeProject(path.join(folder, "shot.aep"));
+  const host = fakeHost(project.handlers);
+  // Files where both backup folders would go.
+  fs.writeFileSync(path.join(folder, "NOLGIA backups"), "x");
+  fs.writeFileSync(path.join(host.documents, "NOLGIA backups"), "x");
+  const ctl = await connected(controllerFor(host));
+  try {
+    const done = await command("run", { code: "keyed" });
+    assert.equal(done.status, "succeeded", "the change itself still runs");
+    assert.match(done.result.notes[0], /could not back up shot\.aep .* does not save over it/);
+    assert.deepEqual(project.saves, []);
+    assert.equal(fs.readFileSync(path.join(folder, "shot.aep"), "utf8"), "as saved");
+    assert.equal(ctl.state().work.notice.problem, true);
+  } finally {
+    await finish(ctl);
+  }
+});
+
+test("save with a path writes a copy and keeps the project on its file; save_as moves it", async () => {
+  const folder = support.tempDir();
+  const file = path.join(folder, "shot.aep");
+  const project = aeProject(file, { dirty: true, inMemory: "current" });
+  const ctl = await connected(controllerFor(fakeHost(project.handlers)));
+  try {
+    const copy = (await command("save", { path: path.join(folder, "safety") })).result;
+    assert.equal(copy.path, file);
+    assert.equal(copy.copy, path.join(folder, "safety.aep"));
+    assert.equal(fs.readFileSync(copy.copy, "utf8"), "current");
+    assert.equal(project.file, file, "the open project did not move");
+    const again = (await command("save", { path: path.join(folder, "safety.aep") })).result;
+    assert.equal(again.copy, path.join(folder, "safety (2).aep"), "never over a file");
+    assert.match(again.note, /already exists, so it is not replaced/);
+    const same = (await command("save", { path: file })).result;
+    assert.equal(same.path, file);
+    assert.equal(same.copy, undefined);
+    // Save As by name, over an existing file: that file is backed up first.
+    fs.writeFileSync(path.join(folder, "v2.aep"), "someone's v2");
+    const moved = (await command("save", { path: path.join(folder, "v2"), save_as: true })).result;
+    assert.equal(moved.path, path.join(folder, "v2.aep"));
+    assert.equal(project.file, path.join(folder, "v2.aep"));
+    assert.equal(fs.readFileSync(moved.backup_of_replaced, "utf8"), "someone's v2");
+    assert.match(moved.note, /now open from that file/);
+    assert.ok(!project.saves.slice(0, -1).some((s) => s.startsWith("save as")), "only the save_as moved it");
+  } finally {
+    await finish(ctl);
+  }
+});
+
+test("save with nothing saved yet puts the project in NOLGIA projects", async () => {
+  const project = aeProject(null);
+  const host = fakeHost(project.handlers);
+  const ctl = await connected(controllerFor(host, { NOLGIA_SAVE_AFTER_CHANGE: "0" }));
+  try {
+    const done = await command("save", {});
+    assert.equal(done.status, "succeeded", done.error);
+    assert.equal(path.dirname(done.result.path), path.join(host.documents, "NOLGIA projects"));
+    assert.match(done.result.note, /never been saved/);
+  } finally {
+    await finish(ctl);
+  }
+});
+
+test("a preview says how big the app rendered it", async () => {
+  const host = fakeHost({
+    preview: (args) => {
+      const file = path.join(args.folder, "frame.png");
+      fs.writeFileSync(file, support.png(1280, 720));
+      return { path: file, width: 3840, height: 2160, frame: 4, comp: "Main", label: "Main", resolution_factor: 3 };
+    },
+  });
+  const ctl = await connected(controllerFor(host));
+  try {
+    const shot = await command("preview", {});
+    assert.equal(shot.status, "succeeded", shot.error);
+    assert.deepEqual(shot.result.rendered, { width: 1280, height: 720, resolution_factor: 3 });
+    assert.equal(host.calls.find(([k]) => k === "preview")[1].width, null, "the app picks the factor for the default width");
+  } finally {
+    await finish(ctl);
+  }
+});
+
+test("a command waits for code NOLGIA stopped waiting for, instead of piling up behind it, and the save follows", async () => {
+  const folder = support.tempDir();
+  const file = path.join(folder, "shot.aep");
+  const project = aeProject(file);
+  const times = {};
+  const handlers = Object.assign({}, project.handlers, {
+    preview: (args) => {
+      times.preview = Date.now();
+      const out = path.join(args.folder, "frame.png");
+      fs.writeFileSync(out, support.png(64, 36));
+      return { path: out, width: 64, height: 36, frame: 0, comp: "Main", label: "Main" };
+    },
+  });
+  const run = handlers.run;
+  handlers.run = async (args) => {
+    try {
+      return await run(args);
+    } finally {
+      times.runEnded = Date.now();
+    }
+  };
+  const ctl = await connected(controllerFor(fakeHost(handlers)));
+  try {
+    const slow = await command("run", { code: "slow:2500", timeout_seconds: 1 });
+    assert.equal(slow.status, "failed");
+    assert.match(slow.error, /still running after 1 s/);
+    assert.match(slow.result.notes.join(" "), /saves the project as soon as it ends/);
+    const shot = await command("preview", {});
+    assert.equal(shot.status, "succeeded", shot.error);
+    assert.ok(times.preview >= times.runEnded, "the preview started only once the code had ended");
+    await support.until(() => project.saves.includes("in place"), 10, "saved after the code ended");
+    assert.equal(fs.readFileSync(file, "utf8"), "slow:2500");
+  } finally {
+    await finish(ctl);
+  }
 });

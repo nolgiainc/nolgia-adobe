@@ -217,8 +217,17 @@
           toggle("Connected", "NOLGIA can send commands only while this is on.", s.connected, "connected"),
           toggle("Allow NOLGIA Agent", "Let your NOLGIA Agent in the cloud work here too.", s.allow_agent, "allow_agent"),
           toggle("Ask before running code", "Show each script and wait for your OK.", s.ask_before_run, "ask_before_run"),
+          s.work
+            ? toggle(
+                "Save after NOLGIA's changes",
+                "Backs up your project first, then saves it after each change NOLGIA makes.",
+                s.work.save_after_change,
+                "save_after_change"
+              )
+            : null,
         ])
       );
+      if (s.work) renderWork(s.work);
       if (s.transcripts) {
         const t = s.transcripts;
         const line = t.connected
@@ -264,6 +273,29 @@
     main.appendChild(foot);
 
     renderChat(s);
+  }
+
+  // Where NOLGIA's work is (After Effects): the project NOLGIA last saved,
+  // its newest backup, and anything to know about it, so after a crash the
+  // person knows which file to open.
+  function renderWork(w) {
+    const lines = [];
+    const last = w.last;
+    if (last) {
+      let line = "NOLGIA's last work: " + last.name + (last.saved_at ? ", saved at " + clock(last.saved_at) : "") + ".";
+      if (!last.open_now && last.exists) line += " It is not the project open now: open " + last.project + " to get it back.";
+      if (!last.exists) line += " That file is no longer at " + last.project + ".";
+      if (last.unsaved_steps) line += " " + last.unsaved_steps + " of NOLGIA's changes after that were not saved.";
+      lines.push(el("div", { text: line }));
+      if (last.backup) {
+        lines.push(el("div", { class: "hint", text: "Backup from before NOLGIA changed it (" + clock(last.backup_at) + "): " + last.backup }));
+      }
+    }
+    if (w.notice && (!last || w.notice.problem || w.notice.at >= (last.saved_at || 0))) {
+      lines.push(el("div", { class: w.notice.problem ? "message problem" : "hint", text: w.notice.text }));
+    }
+    if (!lines.length) return;
+    main.appendChild(el("div", { class: "card work", style: "padding:8px 12px; user-select:text" }, lines));
   }
 
   // ------------------------------------------------------------------ chat

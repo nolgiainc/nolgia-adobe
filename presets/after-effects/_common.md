@@ -15,16 +15,36 @@ for `nolgia_app_run` is ExtendScript.
    whether it has unsaved changes, the active comp (size, frame rate, frames,
    layers with their types and effects) and the other comps. Describe it back in
    one sentence so the person can correct you.
-3. If the project has a path, make a safety copy first with `nolgia_app_export`
-   format `aep` (it copies the project as last saved, next to it, and never
-   overwrites a file). If there are unsaved changes, ask the person to save
-   first (or save with `nolgia_app_save` once they agree). If the project was
-   never saved, ask where to save it and save with `nolgia_app_save` `path`.
+3. Keep the person's work safe. Read `nolgia_work` in the info:
+   - `save_after_change: true` (NOLGIA for Adobe 0.3.0 and newer, the
+     default): the plugin does it. Before your first change it backs the
+     project up (a byte copy in `NOLGIA backups` next to it, unsaved changes
+     included), and after each `nolgia_app_run` or `nolgia_app_import` it saves
+     the project in place; each result says `saved` and `backups`. A project
+     that was never saved goes into Documents/NOLGIA projects first: tell the
+     person where (the result's `notes`).
+   - `save_after_change: false`, or no `nolgia_work` (an older plugin): make the
+     safety copy with `nolgia_app_export` format `aep` (a copy of the project as
+     last saved, next to it, never over a file); if there are unsaved changes,
+     ask the person to save first. Then `nolgia_app_save` with no `path` after
+     each step that changes the project. If the project was never saved, ask
+     where to save it and save with `nolgia_app_save` `path`.
+   - Never use `nolgia_app_save` with a `path` as a safety copy. Before 0.3.0
+     that is Save As: the open project moves onto the new file, every later
+     change goes there, and the person's own file never gets them.
+   - When `nolgia_work.last.open_now` is false after a crash, NOLGIA's last
+     saved work is in `nolgia_work.last.project`: tell the person, and open it
+     only when they say so.
 4. Ask only the questions the workflow lists. Offer a sensible default for each
    so the person can just say "go".
 
 ## While working
 
+- Reach After Effects only through these NOLGIA tools. Never drive it from outside the
+  plugin: no AppleScript or `osascript`, no COM, no Windows UI automation, no
+  simulated keystrokes or clicks, and not any other tool that scripts the app from outside. Those skip the
+  person's Activity list, "Ask before running code" and the plugin's error
+  handling, and a bad call that way can crash After Effects and lose unsaved work.
 - Work in small steps: one `nolgia_app_run` per logical step, each returning a
   short summary in `result` (comp names, layer names and indexes, frame
   ranges). Each run is one undo step in After Effects.
@@ -45,6 +65,67 @@ for `nolgia_app_run` is ExtendScript.
 - If code fails, read the error (it names the line and shows it), fix the code
   and try once more. After two failures on the same step, explain what failed in
   plain words and ask how to proceed.
+
+## Change only what the person points at
+
+- Before a change, work out its scope and say it back in one line, with the
+  frames ("Keying layer 1, frames 108 to 140 only"). In this order: a layer,
+  comp or time range the person names; the selected layers; a work area that
+  is not the whole comp; the layer under the playhead. `nolgia_app_info` gives
+  `active_comp.scope` (`selected_layers`, `work_area`,
+  `work_area_is_whole_comp`, `playhead_frame`, `layers_under_playhead`; older
+  plugins: `selected_layers`, `work_area`, `current_frame`) and every layer's
+  `in_frame` and `out_frame`. A layer the person placed over only
+  part of the timeline (a background still) marks the range too.
+- A timecode (HH:MM:SS:FF, or SS:FF) is frames at the comp's frame rate:
+  00:04:12 at 24 fps is 4 x 24 + 12 = frame 108, counted from the comp's
+  start; subtract `start_timecode_frame` when the comp does not start at 0.
+- Change only that part. For part of a layer's time, split that range into its
+  own layer (duplicate it, set the copy's in and out points to the range, trim
+  the original around it) and put effects on that piece; a new comp for the
+  work is as long as the range. Never key, grade or track a whole layer when
+  the person named a part of it, and never move, remove or precompose layers
+  outside the scope (after `precompose`, the person's layers stay where they
+  were).
+- The whole comp only when the person asks for it or nothing narrower exists.
+  When the scope is unclear and the change is heavy (a key, a grade, a track or
+  a stack of effects on footage longer than about 10 seconds), ask one short
+  question with the default you would take.
+- A layer with `dynamic_link: true` (also in `dynamic_link_items`) is a
+  Premiere Pro sequence that Premiere renders for After Effects frame by frame:
+  slow and memory-heavy at 4K. Never duplicate it whole (no second or third
+  copy for a core matte, a clean plate or a light wrap: those copies cover the
+  range only), never add effects to all of it for a part, and preview only
+  frames inside the range. After Effects can fall over under several 4K copies
+  of a long Dynamic Link sequence with keys and grades on each.
+- Previews: `nolgia_app_preview` at the width you need (768 is enough to judge
+  a key; the plugin renders at a lower resolution to match). Export a full-size
+  `png` only for a frame the person will keep.
+- When you finish, say what changed and what did not: the comp and layers, the
+  frames, the effects added; then "Not touched:" the rest (the other frames,
+  the person's other layers and comps). Name the file it is saved in (`saved`)
+  and the backup (`backups`).
+
+## A person on a green screen: keep them exactly as filmed
+
+When the person keys themselves and says "don't change anything on me", "only
+remove the green" or "match the background to me", that wins over every step
+of a workflow that grades the element toward the plate:
+
+- Nothing on the person's layers but the key (Keylight, spill suppression on
+  the edge). No colour, exposure, grain, light wrap, rim, blur or resampling
+  on them. Every match (black level, brightness, colour of light, saturation,
+  a lens blur, the footage's grain) goes on the background layer, measured
+  with `sampleImage` on both.
+- Keylight alone still moves the inside of the matte (its clip and despill):
+  lay the untouched clip again ABOVE the keyed layer, no effects, with an
+  ALPHA track matte from a precomp of the clip keyed hard (Clip Black 40, Clip
+  White 70) and choked about 6 px (`"ADBE Simple Choker"`). The person's solid
+  pixels are then the clip's own; the keyed layer only shows at the edge.
+- Read the light direction on both before saying anything about it (the
+  person's brighter cheek, the plate's shadows). When they differ, offer to
+  mirror the background (free) or a relit copy of the picture made on NOLGIA
+  (priced first).
 
 ## ExtendScript that bites (After Effects)
 
@@ -110,14 +191,18 @@ for `nolgia_app_run` is ExtendScript.
 - These generations cost credits: say what you are about to make and roughly
   what it costs (read it from the tool's estimate) before you run it, and make it
   only when After Effects cannot build it (procedural fog, rain, glows and grain
-  are free). Work in After Effects itself is free.
+  add no generation cost). Work in After Effects itself adds no generation cost.
 
 ## Finishing
 
-1. Save the project (`nolgia_app_save`), never over a different file.
+1. Save the project in place: with `save_after_change` the last change's result
+   already says `saved`; otherwise `nolgia_app_save` with no `path`. Never save
+   over a different file, and never Save As (`save_as`) unless the person asks
+   for the project under a new name.
 2. Export a preview with `nolgia_app_export` (`mp4` of the finished comp, or
    `png` for a still) so the person has it in their NOLGIA library, and show a
    still.
-3. Tell the person, in a few lines: what you built, where it lives (comp and
-   folder names), the one or two controls they are most likely to adjust and
-   where those are, and the path of the safety copy.
+3. Tell the person, in a few lines: what you changed and on which frames, what
+   you did not touch, where it lives (comp and folder names), the one or two
+   controls they are most likely to adjust and where those are, the file it is
+   saved in and the path of the backup or safety copy.

@@ -25,6 +25,11 @@ the Film assistant category. The agent works through the NOLGIA Bridge tools
 
 ## While working
 
+- Reach Illustrator only through these NOLGIA tools. Never drive it from outside the
+  plugin: no AppleScript or `osascript`, no COM, no Windows UI automation, no
+  simulated keystrokes or clicks, and not any other tool that scripts the app from outside. Those skip the
+  person's Activity list, "Ask before running code" and the plugin's error
+  handling, and a bad call that way can crash Illustrator and lose unsaved work.
 - Work in small steps: one `nolgia_app_run` per logical step, each returning a
   short summary in `result` (layer and group names, item counts).
 - Never delete, rename or restyle the person's existing artwork unless they
@@ -88,7 +93,8 @@ the Film assistant category. The agent works through the NOLGIA Bridge tools
   made with `nolgia_text_to_image`, cleaned up with `nolgia_image_to_image`, and
   brought in with `nolgia_app_import` (embedded, on the `NOLGIA imports` layer).
 - These generations cost credits: say what you are about to make and roughly
-  what it costs before you run it. Work in Illustrator itself is free.
+  what it costs before you run it. Work in Illustrator itself adds no
+  generation cost.
 
 ## Finishing
 

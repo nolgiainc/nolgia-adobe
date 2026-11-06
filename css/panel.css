@@ -560,3 +560,21 @@ button {
   color: var(--faint);
   font-size: 11px;
 }
+
+/* Where NOLGIA's work is (After Effects) */
+.card.work {
+  font-size: 12px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+.card.work .hint {
+  color: var(--faint);
+  font-size: 11px;
+  margin-top: 4px;
+}
+.card.work .message {
+  margin: 4px 0 0;
+}
+.card.work .problem {
+  color: var(--red);
+}

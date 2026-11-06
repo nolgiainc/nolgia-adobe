@@ -37,6 +37,16 @@
     } catch (e) {}
   };
 
+  // The undo groups the agent's own code opens and closes (nolgia.jsx counts
+  // them, so one left open is closed when the code ends).
+  A.openUndo = function (name) {
+    app.beginUndoGroup(name);
+  };
+
+  A.closeUndo = function () {
+    app.endUndoGroup();
+  };
+
   function project() {
     if (!app.project) N.fail("After Effects has no project open.");
     return app.project;
@@ -115,6 +125,22 @@
     return Math.round(c.duration * fps(c));
   }
 
+  // A Premiere Pro sequence brought in through Dynamic Link: a footage item
+  // read from a .prproj. Every frame of it is rendered by Premiere Pro's
+  // Dynamic Link server, so each copy of it is a whole second render.
+  function premiereLinked(item) {
+    try {
+      if (!(item instanceof FootageItem)) return false;
+      var f = null;
+      try {
+        f = item.file || (item.mainSource && item.mainSource.file) || null;
+      } catch (e) {}
+      return N.premiereLinked(f ? f.name : "", item.name);
+    } catch (e2) {
+      return false;
+    }
+  }
+
   function layerType(layer) {
     if (layer instanceof CameraLayer) return "camera";
     if (layer instanceof LightLayer) return "light";
@@ -147,6 +173,10 @@
     };
     try {
       if (layer.source) info.source = layer.source.name;
+      if (premiereLinked(layer.source)) {
+        info.dynamic_link = true;
+        info.source_seconds = N.round(layer.source.duration, 3);
+      }
     } catch (e) {}
     try {
       if (layer.threeDLayer) info.three_d = true;
@@ -202,13 +232,38 @@
     } catch (e2) {}
     var layers = [];
     var selected = [];
+    var under = [];
+    var linked = [];
     for (var i = 1; i <= c.numLayers; i++) {
       var layer = c.layer(i);
-      if (i <= 200) layers.push(layerInfo(c, layer));
+      var entry = layerInfo(c, layer);
+      if (i <= 200) layers.push(entry);
       if (layer.selected) selected.push(layer.index);
+      if (layer.inPoint <= c.time && c.time < layer.outPoint) under.push(layer.index);
+      if (entry.dynamic_link) linked.push(entry);
     }
     info.layer_list = layers;
     info.selected_layers = selected;
+    // What the person is pointing at: the selection, the work area, the
+    // playhead and the layers under it. A change is about that part, not
+    // the whole comp, unless they ask for the whole comp.
+    info.scope = {
+      selected_layers: selected,
+      work_area: info.work_area,
+      work_area_is_whole_comp: info.work_area.start_frame === 0 && info.work_area.end_frame >= info.frames - 1,
+      playhead_frame: info.current_frame,
+      layers_under_playhead: under
+    };
+    var notes = [];
+    for (var k = 0; k < linked.length; k++) {
+      notes.push(
+        "Layer " + linked[k].index + " is a Premiere Pro sequence through Dynamic Link (" + linked[k].source_seconds +
+          " s): Premiere renders its frames for After Effects, slow and heavy at 4K. Change only the range the person means: " +
+          "split that range into its own layer (duplicate, set its in and out points to the range, trim the original around it) " +
+          "and put effects on that piece. Never duplicate the whole layer, and never add effects to all of it for a part."
+      );
+    }
+    if (notes.length) info.notes = notes;
     return info;
   }
 
@@ -244,6 +299,17 @@
       if (p.renderQueue.item(q).status === RQItemStatus.QUEUED) queued++;
     }
     var c = activeComp();
+    var linkedItems = [];
+    for (var d = 1; d <= p.items.length && linkedItems.length < 50; d++) {
+      var it = p.items[d];
+      if (premiereLinked(it)) {
+        var used = 0;
+        try {
+          used = it.usedIn.length;
+        } catch (e) {}
+        linkedItems.push({ name: it.name, id: it.id, seconds: N.round(it.duration, 3), width: it.width, height: it.height, used_in_comps: used });
+      }
+    }
     return {
       app_version: String(app.version),
       document: doc,
@@ -261,6 +327,7 @@
       active_comp: c ? compInfo(c, true) : null,
       comps: brief,
       selected_items: selection,
+      dynamic_link_items: linkedItems,
       render_queue: { items: p.renderQueue.numItems, queued: queued }
     };
   };
@@ -289,16 +356,27 @@
     var frame = args.frame === null || args.frame === undefined ? 0 : args.frame;
     if (frame < 0 || frame >= frames) N.fail("Frame " + frame + " is outside " + item.name + " (frames 0 to " + (frames - 1) + ").");
     var file = N.file(args.folder + "/frame.png");
+    var factor = N.previewFactor(item.width, args.width);
     A.beginUndo("NOLGIA: preview");
     try {
       var temp = project().items.addComp("NOLGIA preview", item.width, item.height, item.pixelAspect, frames / rate, rate);
       temp.layers.add(item);
+      if (factor > 1) temp.resolutionFactor = [factor, factor];
       temp.saveFrameToPng(frame / rate, file);
       temp.remove();
     } finally {
       A.endUndo();
     }
-    return { path: file.fsName, width: item.width, height: item.height, frame: frame, source: item.name, label: item.name, background: "#000000" };
+    return {
+      path: file.fsName,
+      width: item.width,
+      height: item.height,
+      frame: frame,
+      source: item.name,
+      label: item.name,
+      background: "#000000",
+      resolution_factor: factor
+    };
   }
 
   A.preview = function (args) {
@@ -310,7 +388,27 @@
       N.fail("Frame " + frame + " is outside " + c.name + " (frames 0 to " + (frameCount(c) - 1) + ").");
     }
     var file = N.file(args.folder + "/frame.png");
-    c.saveFrameToPng(timeOf(c, frame), file);
+    // A preview is a look at the frame, not a deliverable: it renders at the
+    // lowest resolution that still covers the width asked (a 4K comp at
+    // 1280 wide renders at Third: a ninth of the pixels through every effect
+    // and Dynamic Link layer), then the comp's own resolution comes back.
+    var factor = N.previewFactor(c.width, args.width);
+    var own = c.resolutionFactor;
+    var changed = factor > 1 && !(own && own[0] === factor && own[1] === factor);
+    if (changed) {
+      A.beginUndo("NOLGIA: preview");
+      try {
+        c.resolutionFactor = [factor, factor];
+        c.saveFrameToPng(timeOf(c, frame), file);
+      } finally {
+        try {
+          c.resolutionFactor = own;
+        } catch (e) {}
+        A.endUndo();
+      }
+    } else {
+      c.saveFrameToPng(timeOf(c, frame), file);
+    }
     return {
       path: file.fsName,
       width: c.width,
@@ -318,7 +416,9 @@
       frame: frame,
       comp: c.name,
       label: c.name,
-      background: N.hex(c.bgColor)
+      background: N.hex(c.bgColor),
+      // (Parenthesised: ExtendScript reads a ? b : c ? d : e wrongly.)
+      resolution_factor: changed ? factor : (own ? own[0] : 1)
     };
   };
 
@@ -472,6 +572,10 @@
     return { path: f ? f.fsName : null, dirty: dirty() };
   };
 
+  // Without a path: save the project in place. With a path: Save As, which
+  // moves the open project onto that file. The panel uses a path only for a
+  // project that has no file yet, or when Save As is asked for by name
+  // (save_as); a copy of the project is a byte copy of its file, never this.
   A.save = function (args) {
     var p = project();
     if (!args.path) {
