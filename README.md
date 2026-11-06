@@ -455,7 +455,10 @@ Premiere Pro and Illustrator. Older panels (0.2.0 to 0.3.0) hear about a newer
 version in their chat instead: nolgia-api adds one line to the first Agent
 reply after a release, once per chat ("A newer NOLGIA for Adobe (0.3.1) is
 out: https://nolgia.ai/plugins/after-effects"). Unit tests (the version
-compare, Not now, errors, the three apps against the mock API's catalog).
+compare, Not now, errors, the three apps against the mock API's catalog); the
+end-to-end test in After Effects 25.6, Premiere Pro 26.2.0 and Illustrator
+30.0.0 on Windows 11; the line, Update and Not now in the real After Effects
+panel. Released without a Mac run: macOS is untested for this version.
 
 0.2.9 (November 3, 2026): in After Effects, importing the result of a green
 screen or keep-me render (nolgia-api #1423: `matte_layer_asset_id`) also
