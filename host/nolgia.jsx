@@ -15,7 +15,7 @@
 
 $.global.__nolgia = (function () {
   var N = {};
-  N.version = "0.2.9";
+  N.version = "0.3.0";
   N.adapter = null;
   N.MAX_ITEMS = 10000;
   N.MAX_DEPTH = 32;
@@ -160,6 +160,23 @@ $.global.__nolgia = (function () {
     return Math.round(value * m) / m;
   };
 
+  // A Premiere Pro sequence in After Effects through Dynamic Link reads
+  // from a .prproj (its item is named "Sequence/Project.prproj").
+  N.premiereLinked = function (fileName, itemName) {
+    return /\.prproj$/i.test(String(fileName || "")) || /\.prproj$/i.test(String(itemName || ""));
+  };
+
+  // The resolution factor a preview renders at: the lowest resolution that
+  // still covers the width asked (1280 when none), from Full (1) to an
+  // eighth (8).
+  N.previewFactor = function (width, wanted) {
+    var w = wanted > 0 ? wanted : 1280;
+    var f = Math.floor(width / w);
+    if (!(f >= 1)) f = 1;
+    if (f > 8) f = 8;
+    return f;
+  };
+
   N.hex = function (rgb) {
     if (!rgb || rgb.length < 3) return null;
     var out = "#";
@@ -201,6 +218,46 @@ $.global.__nolgia = (function () {
     return text;
   };
 
+  // The code's own undo groups (After Effects). app.beginUndoGroup and
+  // app.endUndoGroup in the code go through this count, so a group the code
+  // left open (it threw before its endUndoGroup) is closed when the code
+  // ends. Groups nest, so one left open would leave NOLGIA's own group
+  // around it open too, and later changes could fold into it.
+  // An end with no begin of the code's own is ignored, so it cannot close
+  // NOLGIA's group around the code.
+  function UndoGroups(adapter) {
+    this.adapter = adapter;
+    this.open = 0;
+  }
+  UndoGroups.prototype.begin = function (name) {
+    this.adapter.openUndo(name === undefined || name === null ? "NOLGIA" : String(name));
+    this.open++;
+  };
+  UndoGroups.prototype.end = function () {
+    if (this.open <= 0) return;
+    this.open--;
+    this.adapter.closeUndo();
+  };
+  UndoGroups.prototype.closeAll = function () {
+    var closed = 0;
+    while (this.open > 0) {
+      this.open--;
+      closed++;
+      try {
+        this.adapter.closeUndo();
+      } catch (e) {}
+    }
+    return closed;
+  };
+
+  // The code with app.beginUndoGroup( and app.endUndoGroup( calling the
+  // count instead. Only within lines, so line numbers stay the same.
+  N.countUndoGroups = function (code) {
+    return String(code)
+      .replace(/(^|[^.\w$])app\s*\.\s*beginUndoGroup\s*\(/g, "$1__nolgia_undo.begin(")
+      .replace(/(^|[^.\w$])app\s*\.\s*endUndoGroup\s*\(/g, "$1__nolgia_undo.end(");
+  };
+
   // Run the agent's code. It sees print(), log() and console.log/info/warn/
   // error (warn and error go to stderr), and alert() writes to stderr
   // instead of opening a dialog. `value` is what the code puts in `result`,
@@ -215,32 +272,43 @@ $.global.__nolgia = (function () {
     var warn = function () {
       err.write(argsText(arguments) + "\n");
     };
+    var undo = N.adapter && N.adapter.openUndo && N.adapter.closeUndo ? new UndoGroups(N.adapter) : null;
+    var source = undo ? N.countUndoGroups(code) : code;
     var sandbox = {
       print: print,
       console: { log: print, info: print, debug: print, warn: warn, error: warn },
       alert: function (message) {
         err.write("alert: " + message + "\n");
-      }
+      },
+      undo: undo
     };
     var hooks = hookWriteln(out);
     var outcome = null;
     var lineOffset = 0;
+    var closeGroups = function () {
+      var closed = undo ? undo.closeAll() : 0;
+      if (closed) {
+        err.write("[NOLGIA] The code left " + closed + " undo group" + (closed === 1 ? "" : "s") + " open; NOLGIA closed " +
+          (closed === 1 ? "it" : "them") + ".\n");
+      }
+    };
     try {
       if (N.adapter && N.adapter.beginUndo) N.adapter.beginUndo("NOLGIA: run code");
       try {
-        outcome = $.global.__nolgia_exec(code, sandbox);
+        outcome = $.global.__nolgia_exec(source, sandbox);
       } catch (e) {
         // A top-level return is a syntax error in a program; run the code as
         // a function body instead. Nothing ran yet: the parse failed first.
         if (e instanceof SyntaxError && /return/i.test(String(e.message))) {
           lineOffset = 1;
-          outcome = $.global.__nolgia_exec("(function(){\n" + code + "\n}).call(this)", sandbox);
+          outcome = $.global.__nolgia_exec("(function(){\n" + source + "\n}).call(this)", sandbox);
         } else {
           throw e;
         }
       }
     } catch (e3) {
       unhook(hooks);
+      closeGroups();
       if (N.adapter && N.adapter.endUndo) N.adapter.endUndo();
       return {
         ok: false,
@@ -249,6 +317,7 @@ $.global.__nolgia = (function () {
       };
     }
     unhook(hooks);
+    closeGroups();
     if (N.adapter && N.adapter.endUndo) N.adapter.endUndo();
     var value = outcome.result !== undefined ? outcome.result : outcome.last;
     return { ok: true, result: { value: new RawJSON(N.stringify(value)), stdout: out.text(), stderr: err.text() } };
@@ -349,13 +418,16 @@ $.global.__nolgia = (function () {
 })();
 
 // Runs the agent's code with as few names in scope as possible: only
-// `result`, print, log, console and alert. It is a top-level function so the
-// code cannot see or change NOLGIA's own variables by accident.
+// `result`, print, log, console and alert (and __nolgia_undo, which the
+// code's app.beginUndoGroup and app.endUndoGroup go through in After
+// Effects). It is a top-level function so the code cannot see or change
+// NOLGIA's own variables by accident.
 $.global.__nolgia_exec = function (__nolgia_src, __nolgia_sandbox) {
   var print = __nolgia_sandbox.print;
   var log = __nolgia_sandbox.print;
   var console = __nolgia_sandbox.console;
   var alert = __nolgia_sandbox.alert;
+  var __nolgia_undo = __nolgia_sandbox.undo;
   var result;
   var __nolgia_last = eval(__nolgia_src);
   return { result: result, last: __nolgia_last };

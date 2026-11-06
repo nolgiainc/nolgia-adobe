@@ -108,6 +108,80 @@ test("run cannot see NOLGIA's own variables", () => {
   assert.deepEqual(res.result.value, ["undefined", "undefined", "undefined", "undefined", "undefined"]);
 });
 
+// An adapter with undo groups, as After Effects has: every call is logged.
+function withUndo(ctx) {
+  vm.runInContext(
+    "var undoLog = [];" +
+      "__nolgia.adapter = {" +
+      'beginUndo: function (name) { undoLog.push("begin " + name); },' +
+      'endUndo: function () { undoLog.push("end"); },' +
+      'openUndo: function (name) { undoLog.push("open " + name); },' +
+      'closeUndo: function () { undoLog.push("close"); } };',
+    ctx
+  );
+  return () => JSON.parse(vm.runInContext("JSON.stringify(undoLog.splice(0, undoLog.length))", ctx));
+}
+
+test("run closes the undo groups the code left open, so later steps are not folded into them", () => {
+  const { call, ctx } = load();
+  const log = withUndo(ctx);
+  const failed = call("run", { code: 'app.beginUndoGroup("Key it");\nnull.foo;' });
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /TypeError/);
+  assert.deepEqual(log(), ["begin NOLGIA: run code", "open Key it", "close", "end"]);
+  assert.equal(failed.result.stderr, "[NOLGIA] The code left 1 undo group open; NOLGIA closed it.\n");
+  // Balanced groups: nothing extra, nothing said.
+  const ok = call("run", { code: 'app.beginUndoGroup("a");\napp.endUndoGroup();\n7' });
+  assert.equal(ok.result.value, 7);
+  assert.equal(ok.result.stderr, "");
+  assert.deepEqual(log(), ["begin NOLGIA: run code", "open a", "close", "end"]);
+  // An end the code did not begin cannot close NOLGIA's own group.
+  call("run", { code: "app.endUndoGroup(); app.endUndoGroup(); 1" });
+  assert.deepEqual(log(), ["begin NOLGIA: run code", "end"]);
+  // Two left open, one of them in a top-level-return program.
+  const two = call("run", { code: 'app.beginUndoGroup("x"); app.beginUndoGroup("y");\nif (true) { return 1; }' });
+  assert.equal(two.ok, true);
+  assert.deepEqual(log(), ["begin NOLGIA: run code", "open x", "open y", "close", "close", "end"]);
+  assert.match(two.result.stderr, /left 2 undo groups open; NOLGIA closed them/);
+});
+
+test("only app.beginUndoGroup and app.endUndoGroup calls are counted, line by line", () => {
+  const { N } = load();
+  assert.equal(N.countUndoGroups("app.beginUndoGroup('a');"), "__nolgia_undo.begin('a');");
+  assert.equal(N.countUndoGroups("x = 1;\n  app . endUndoGroup ();"), "x = 1;\n  __nolgia_undo.end();");
+  assert.equal(N.countUndoGroups("$.global.app.beginUndoGroup('a')"), "$.global.app.beginUndoGroup('a')");
+  assert.equal(N.countUndoGroups("myapp.beginUndoGroup('a')"), "myapp.beginUndoGroup('a')");
+  const code = "a();\napp.beginUndoGroup('b');\nc();";
+  assert.equal(N.countUndoGroups(code).split("\n").length, 3);
+});
+
+test("an app without undo groups runs the code as it is", () => {
+  const { call } = load();
+  // The test adapter has no openUndo (Premiere Pro and Illustrator have no undo groups).
+  const res = call("run", { code: "var app = {beginUndoGroup: function () { return 'its own'; }};\napp.beginUndoGroup('z')" });
+  assert.equal(res.result.value, "its own");
+});
+
+test("previews render at the lowest resolution that still covers the width asked", () => {
+  const { N } = load();
+  assert.equal(N.previewFactor(3840, 1280), 3);
+  assert.equal(N.previewFactor(3840, null), 3, "1280 when no width is asked");
+  assert.equal(N.previewFactor(3840, 768), 5);
+  assert.equal(N.previewFactor(3840, 1920), 2);
+  assert.equal(N.previewFactor(1920, 640), 3);
+  assert.equal(N.previewFactor(1280, 1920), 1, "never above Full");
+  assert.equal(N.previewFactor(64, 1280), 1);
+  assert.equal(N.previewFactor(100000, 16), 8, "at most an eighth");
+});
+
+test("a Premiere Pro sequence through Dynamic Link is recognised by its .prproj", () => {
+  const { N } = load();
+  assert.equal(N.premiereLinked("Edit.prproj", ""), true);
+  assert.equal(N.premiereLinked("", "Sequence 01/Edit.PRPROJ"), true);
+  assert.equal(N.premiereLinked("clip.mov", "clip.mov"), false);
+  assert.equal(N.premiereLinked(null, undefined), false);
+});
+
 // Words ES3 reserves. ExtendScript refuses them as names (V8 does not, so
 // only a check like this catches them before a real app does).
 const ES3_RESERVED = [
@@ -134,6 +208,10 @@ test("host files are ES3: no reserved words, no modern syntax", () => {
     }
     assert.doesNotMatch(code, /=>|`|\.\.\./, name + " uses syntax newer than ES3");
     assert.doesNotMatch(code, /,\s*[}\]]/, name + " has a trailing comma");
+    // After Effects 25.6 evaluates `true ? 4 : x ? y : 1` as 1: a conditional
+    // inside a conditional needs parentheses.
+    assert.doesNotMatch(code, /\?[^?:;,(){}]*:[^?;,(){}]*\?/, name + " nests a conditional without parentheses");
+    assert.doesNotMatch(code, /\?[^?:;,(){}]*\?/, name + " nests a conditional without parentheses");
     new vm.Script(fs.readFileSync(path.join(HOST, name), "utf8"), { filename: name }); // parses at all
   }
 });

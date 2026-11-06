@@ -29,11 +29,11 @@ switches. Closing the panel does not disconnect.
    Adobe's own installer. On Windows:
 
    ```bat
-   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.2.9.zxp
+   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.3.0.zxp
    ```
 
    On macOS the same tool is
-   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.2.9.zxp`.
+   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.3.0.zxp`.
    The installer skips a version that is already installed: to reinstall the
    same version, remove it first (`/remove NOLGIA`). The package is signed, so
    no debug setting is needed.
@@ -122,12 +122,12 @@ sequence; artboards count from 1.
 
 | Command | After Effects | Premiere Pro | Illustrator |
 |---|---|---|---|
-| `info` | project (file, unsaved changes, items by kind, bit depth), active comp (size, frame rate, frames, current frame, work area, layers with type, effects and selection), all comps, selected items, render queue | project (file), bins with counts, sequences (size, frame rate, length, tracks), active sequence (playhead, in and out, tracks, selected clips), selected items | open documents, the active one's colour mode, size, artboards, layers and sublayers, selection, counts of paths, groups, images and text |
+| `info` | project (file, unsaved changes, items by kind, bit depth), active comp (size, frame rate, frames, current frame, work area, layers with type, effects and selection, `scope`: what the person points at), all comps, selected items, Premiere Pro sequences brought in through Dynamic Link, render queue, `nolgia_work` (where NOLGIA's saved work and backups are) | project (file), bins with counts, sequences (size, frame rate, length, tracks), active sequence (playhead, in and out, tracks, selected clips), selected items | open documents, the active one's colour mode, size, artboards, layers and sublayers, selection, counts of paths, groups, images and text |
 | `run` | ExtendScript: `{value, stdout, stderr}` (see below) | same | same |
 | `preview` | `comp` (or `camera`) name, `frame`, `width`: a still of a comp or of a footage item | `sequence` (or `camera`), `frame`, `width`: a frame of the sequence | `artboard` (name or number, or `camera`), `width`: the artboard |
 | `import_asset` | footage into the `NOLGIA imports` folder; `as: "layer"` also adds it to the active comp; or `color_preset`, a NOLGIA film stock installed as a LUT (below) | media into the `NOLGIA imports` bin; or `color_preset`, a NOLGIA film stock installed as a LUT (below) | images embedded (or `as: "link"`) and SVG, PDF or AI as groups, on a `NOLGIA imports` layer; with nothing open, the image opens as a document |
 | `export` | `mp4` (render queue, H.264), `png` (a frame), `aep` | `mp4` (H.264 Match Source), `png` (a frame), `prproj` | `png` (the artboard, at least 2048 px), `svg`, `pdf`, `ai` |
-| `save` | `path?` | `path?` | `path?` |
+| `save` | in place; `path?` writes a copy there and the project stays on its own file; `save_as: true` moves it to `path` (Save As) | same | same |
 | `open` | `.aep` (asks you first over unsaved changes) | `.prproj` (opens next to the open one) | any file Illustrator opens (in its own window) |
 | `dit` | camera-card DIT through the NOLGIA CLI on this computer (below) | same | same |
 
@@ -208,11 +208,17 @@ clips in the project, so an agent can cut on what people say.
 
 Previews are uploaded to your NOLGIA library as a PNG, or a JPEG when the PNG
 would be too big for your agent to see inline (about 3.6 MB): `{asset_id,
-width, height, mime_type, comp|sequence|artboard, frame}`. `mp4` and `png`
+width, height, mime_type, comp|sequence|artboard, frame, rendered}`. After
+Effects renders a preview at the lowest resolution that still covers the width
+asked (1280 by default): a 4K comp renders at Third, a ninth of the pixels
+through every effect, and the comp's own resolution comes back right after
+(`rendered` says the size and factor). A command never starts while the app is
+still busy with one NOLGIA stopped waiting for: it waits for it within its own
+time, so previews cannot pile up behind a slow script. `mp4` and `png`
 exports are uploaded too: `{asset_id, format, filename, frames}`. Project files
 (`aep`, `prproj`, `ai`) stay on your computer: exporting one copies the project
 as last saved next to it, never over a file (a project that was never saved is
-saved into Documents/NOLGIA exports). NOLGIA's library does not take SVG or PDF
+saved into Documents/NOLGIA projects). NOLGIA's library does not take SVG or PDF
 yet, so those exports stay on your computer too, next to the document:
 `{asset_id: null, path, note}`. Imported files that the app needs on disk go
 into `nolgia_assets` next to the project, or Documents/NOLGIA imports while it
@@ -242,9 +248,39 @@ is what the code puts in `result`, else the value of its last statement, or
 what it returns when it uses `return` at the top level. It is turned into JSON:
 app objects become their names, files their paths, dates ISO text. A failure
 returns the error with its line number and the lines around it. After Effects
-groups each run into one undo step. ExtendScript cannot be stopped from
-outside: when code outlives its time, NOLGIA stops waiting and says so, and the
-app finishes it on its own.
+groups each run into one undo step, and closes any undo group the code opened
+and left open (it failed before its `app.endUndoGroup()`), so your own later
+steps are not folded into it. ExtendScript cannot be stopped from outside: when
+code outlives its time, NOLGIA stops waiting and says so, and the app finishes
+it on its own.
+
+**Keeping your work safe (After Effects).** With Save after NOLGIA's changes
+on (the default; a switch in the panel):
+
+- Before NOLGIA's first change to a project, and again after 10 minutes without
+  one, a byte copy of the project file goes into `NOLGIA backups` next to it
+  (`<name> before NOLGIA <date> <time>.aep`; Documents/NOLGIA backups when that
+  folder cannot be written). When the project has changes you have not saved,
+  it is saved and copied once more (`(with unsaved changes)`), so a backup is
+  exactly the project before NOLGIA touched it. The newest 20 backups of each
+  project are kept.
+- After each change NOLGIA makes (`run`, `import_asset`), done or failed, the
+  project is saved in place: never Save As, so it stays on your own file. If a
+  crash comes later, your file has NOLGIA's last change.
+- A project that was never saved is saved into Documents/NOLGIA projects
+  (`Untitled <date> <time>.aep`) before NOLGIA changes it, and the panel says so.
+- NOLGIA never writes over the project without a backup made first: if it
+  cannot make one, it does not save, and says why.
+- The panel shows which file holds NOLGIA's last saved work and its newest
+  backup, and `info` tells your agent (`nolgia_work`): after a crash, when
+  After Effects opens its own crash copy (a name ending in `_1`), that is how
+  you find NOLGIA's work. Each step is recorded in `work.json` next to the
+  settings.
+
+The result of a change says `saved: {path, at}`, `backups` and `notes`.
+`save` with a `path` saves in place and writes a byte copy at the path (never
+over a file); `save_as: true` is the only way NOLGIA moves the open project to
+another file, and a file it would replace is backed up first.
 
 ## For scripts, render machines and tests
 
@@ -255,8 +291,10 @@ app finishes it on its own.
 | `NOLGIA_BRIDGE_AUTOCONNECT=1` | connect as soon as the app starts |
 | `NOLGIA_ASK_BEFORE_RUN=0/1` | set Ask before running code |
 | `NOLGIA_ALLOW_AGENT=0/1` | set Allow NOLGIA Agent |
+| `NOLGIA_SAVE_AFTER_CHANGE=0/1` | set Save after NOLGIA's changes (After Effects) |
+| `NOLGIA_PROJECTS_DIR` | where projects that were never saved go (default Documents/NOLGIA projects) |
 | `NOLGIA_INSTANCE_ID` | fixed session id for this app |
-| `NOLGIA_EXPORT_DIR` | where `aep`, `prproj` and `ai` copies of unsaved projects go |
+| `NOLGIA_EXPORT_DIR` | where Illustrator's SVG and PDF exports of an unsaved document go |
 | `NOLGIA_PREVIEW_MAX_BYTES` | the size above which previews become JPEG |
 | `NOLGIA_LUT_DIR` | the LUT folder `color_preset` installs into (it holds `Creative` and `Technical`); default the per-user Adobe one |
 | `NOLGIA_TRANSCRIPTS=0` | Premiere Pro: do not open the local link NOLGIA Transcripts connects to |
@@ -296,7 +334,7 @@ keeps it in `dist` (ignored by git):
 
 ```sh
 node tools/build.js --zxpsigncmd /path/to/ZXPSignCmd.exe
-# dist/nolgia-adobe-0.2.9.zxp
+# dist/nolgia-adobe-0.3.0.zxp
 node tools/build-transcripts.js
 # dist/nolgia-premiere-transcripts-<version>.ccx (NOLGIA Transcripts, a plain zip;
 # build.js also puts it inside the .zxp, for the panel's Install transcripts)
@@ -327,8 +365,16 @@ the mock API and the real one. Premiere Pro 26.5.2 on macOS ignores
 AppleScript, its quit included, with or without NOLGIA installed (Cmd+Q
 works), so the test quits it through the plugin with ExtendScript's
 `app.quit()` and skips the ask check there (see the test's docstring). The
-test's macOS support changed how it drives the apps on Windows too; it has
-not been run on Windows since.
+test's macOS support changed how it drives the apps on Windows too.
+
+0.3.0 on Windows 11, on November 6, 2026, against the mock API: it passed in
+After Effects 2025 (25.6, build 101; 23 checks, among them an untitled
+project saved into NOLGIA projects, a change backed up first and saved in
+place after, a failed run leaving no undo group open, the scope in `info`,
+`save` with a path writing a copy, and a preview of a 1280x720 comp asked at
+640 rendered at half size), Premiere Pro 2026 (26.2.0; 19 checks) and
+Illustrator 2026 (30.0.0; 18 checks). macOS is untested for 0.3.0: it was
+released without a Mac run.
 
 0.2.1 (the panel's chat) on macOS 26.6.2 (Apple silicon), on October 29,
 2026, in After Effects 26.5.0, Premiere Pro 26.5.2 and Illustrator 30.8.2
@@ -375,6 +421,24 @@ request showed, and approved a click 0.3 s after a request showed, a press
 at 0.3 s released at 1.5 s, and Return and Space after a click had left
 the button with focus; 0.2.5 moved nothing and approved none of these, and
 approved a click 1.5 s after the request showed. Not run in the apps.
+
+0.3.0 (November 6, 2026), from a customer's After Effects crash on macOS
+where nothing NOLGIA had done was saved: `save` with a `path` was Save As, so
+the agent's "safety copy" moved the open project onto the copy and every later
+change stayed there, unsaved; and nothing saved after a change. Now, in After
+Effects, NOLGIA backs the project up (a byte copy) before its first change and
+saves it in place after each change; a project that was never saved goes into
+Documents/NOLGIA projects first; the panel and `info` say which file holds
+NOLGIA's last work and its backup. `save` with a `path` keeps the project on
+its file and writes a copy (all three apps); `save_as: true` moves it. Previews
+render at a lower resolution that still covers the width asked; a command waits
+for a script NOLGIA stopped waiting for instead of queueing behind it; a failed
+run closes the undo groups it left open; `info` says what the person points at
+(`scope`: selection, work area, playhead and the layers under it) and flags
+Premiere Pro sequences brought in through Dynamic Link. Unit tests against the
+mock API; the end-to-end test in After Effects 25.6, Premiere Pro 26.2.0 and
+Illustrator 30.0.0 on Windows 11 (see "For scripts, render machines and
+tests"). Released without a Mac run: macOS is untested for this version.
 
 0.2.9 (November 3, 2026): in After Effects, importing the result of a green
 screen or keep-me render (nolgia-api #1423: `matte_layer_asset_id`) also

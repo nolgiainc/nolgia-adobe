@@ -235,6 +235,9 @@ function validate(app, kind, args) {
     out.target = viewArg(args, view);
   } else if (kind === "save") {
     out.path = strArg(args, "path");
+    // Save As by name: the open project moves to `path`. Without it, `path`
+    // gets a copy and the project stays on its own file.
+    out.save_as = boolArg(args, "save_as");
   } else if (kind === "open") {
     out.path = strArg(args, "path", { required: true });
   } else if (kind === "transcribe") {

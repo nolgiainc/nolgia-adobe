@@ -61,6 +61,8 @@ from mock_bridge_server import MockBridgeServer  # noqa: E402
 TOKEN = "e2e-token"
 VERSION = json.load(open(os.path.join(ADOBE, "package.json")))["version"]
 CAPABILITIES = ["info", "run", "preview", "import_asset", "export", "save", "open", "dit"]
+# Kinds only one app has (core/commands.js APP_KINDS).
+APP_CAPABILITIES = {"premiere": ["transcribe"]}
 UPIA = r"C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe"
 UPIA_MAC = ("/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/"
             "UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent")
@@ -569,7 +571,8 @@ def run_app(app, win, caller, checks, opts, api_url, token):
     instance_id = "nolgia-e2e-" + app
     env = {"NOLGIA_TOKEN": token, "NOLGIA_API_URL": api_url, "NOLGIA_BRIDGE_AUTOCONNECT": "1",
            "NOLGIA_ASK_BEFORE_RUN": "0", "NOLGIA_ALLOW_AGENT": "1", "NOLGIA_INSTANCE_ID": instance_id,
-           "NOLGIA_EXPORT_DIR": win.to_win(os.path.join(work, "exports"))}
+           "NOLGIA_EXPORT_DIR": win.to_win(os.path.join(work, "exports")),
+           "NOLGIA_PROJECTS_DIR": win.to_win(os.path.join(work, "projects"))}
     path = env_file(win)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
@@ -581,7 +584,7 @@ def run_app(app, win, caller, checks, opts, api_url, token):
     def connects():
         session.update(wait_for_session(win, caller, app, instance_id, proc))
         caller.session_id = session["id"]
-        assert session["capabilities"] == CAPABILITIES, session["capabilities"]
+        assert session["capabilities"] == CAPABILITIES + APP_CAPABILITIES.get(app, []), session["capabilities"]
         assert session["plugin_version"] == VERSION
         assert session["allow_agent"] is True
         assert session["machine_name"]
@@ -601,6 +604,9 @@ def run_app(app, win, caller, checks, opts, api_url, token):
     try:
         checks.check(app, "info with nothing open", lambda: _info_empty(caller, app))
         checks.check(app, "run builds a test document", lambda: _build(caller, app, wwork, wstill))
+        if app == "after_effects":
+            checks.check(app, "an untitled project is saved into NOLGIA projects before NOLGIA changes it",
+                         lambda: _untitled_saved(caller, win, work))
         checks.check(app, "run: value, stdout, stderr", lambda: _run_values(caller))
         checks.check(app, "run: errors carry the line", lambda: _run_error(caller))
         checks.check(app, "run: other languages refused", lambda: _other_language(caller))
@@ -623,6 +629,11 @@ def run_app(app, win, caller, checks, opts, api_url, token):
         checks.check(app, "save to a path, then save", lambda: _save(caller, win, app, work))
         checks.check(app, "export %s copies the project" % proc["ext"],
                      lambda: _export_project(caller, win, proc["ext"]))
+        if app == "after_effects":
+            checks.check(app, "a change is backed up first and saved in place after",
+                         lambda: _change_saved(caller, win, work))
+            checks.check(app, "a failed run leaves no undo group open", lambda: _undo_closed(caller))
+            checks.check(app, "info gives the scope: selection, work area, playhead", lambda: _scope(caller))
         checks.check(app, "open a saved file", lambda: _open(caller, win, app, work))
         close = CLOSE_DOCUMENTS[app]
         if quits_via_plugin:
@@ -704,7 +715,9 @@ def _build(caller, app, wwork, wstill):
 
 def _run_values(caller):
     res = caller.ok("run", {"code": 'print("out", 1); console.error("err"); $.writeln("w"); 20 + 22'})
-    assert res == {"value": 42, "stdout": "out 1\nw\n", "stderr": "err\n"}, res
+    # (After Effects also says where it saved the project: saved, backups.)
+    got = {k: res[k] for k in ("value", "stdout", "stderr")}
+    assert got == {"value": 42, "stdout": "out 1\nw\n", "stderr": "err\n"}, res
     res = caller.ok("run", {"code": "if (true) { return {nested: [1, 'two', null]}; }"})
     assert res["value"] == {"nested": [1, "two", None]}, res
 
@@ -752,6 +765,12 @@ def _preview(caller, app):
     data = caller.asset_bytes(res["asset_id"])
     assert jpeg_or_png_size(data) == (res["width"], res["height"]), (res, jpeg_or_png_size(data))
     assert res["width"] == 640, res
+    if app == "after_effects":
+        # The 1280 px comp renders at Half for 640 wide (not at Full, then
+        # scaled), and its own resolution comes back afterwards.
+        assert res["rendered"] == {"width": 640, "height": 360, "resolution_factor": 2}, res
+        own = caller.ok("run", {"code": "app.project.activeItem.resolutionFactor"})["value"]
+        assert own == [1, 1], own
     target = {"after_effects": {"comp": "E2E Comp", "frame": 12},
               "premiere": {"sequence": "E2E Sequence", "frame": 12},
               "illustrator": {"artboard": 2}}[app]
@@ -837,12 +856,21 @@ def _export_local(caller, win, fmt):
 
 
 def _save(caller, win, app, work):
+    """save with a path saves in place and writes a copy there (the open
+    document stays on its file); save_as moves it. A document with no
+    project file yet (Illustrator's untitled one) is saved at the path."""
     ext = APPS[app]["ext"]
     target = win.to_win(os.path.join(work, "e2e-saved"))
+    before = caller.ok("info")["document"].get("path")
     res = caller.ok("save", {"path": target})
-    assert res["path"].lower().endswith("e2e-saved." + ext), res
-    assert os.path.isfile(win.from_win(res["path"])), res
-    assert caller.ok("save")["path"] == res["path"]
+    written = res.get("copy") or res["path"]
+    assert written.lower().endswith("e2e-saved." + ext), res
+    assert os.path.isfile(win.from_win(written)), res
+    if before:
+        assert res["path"].lower() == before.lower() and res["copy"], (before, res)
+    moved = caller.ok("save", {"path": target, "save_as": True})
+    assert moved["path"].lower().endswith("e2e-saved." + ext), moved
+    assert caller.ok("save")["path"] == moved["path"]
 
 
 def _export_project(caller, win, ext):
@@ -857,6 +885,48 @@ def _open(caller, win, app, work):
     res = caller.ok("open", {"path": target}, timeout=120)
     assert res["path"].lower() == target.lower(), res
     caller.fails("open", {"path": win.to_win(os.path.join(work, "missing." + ext))}, "There is no file at")
+
+
+def _untitled_saved(caller, win, work):
+    res = caller.ok("info")
+    path = res["document"].get("path") or ""
+    folder = win.to_win(os.path.join(work, "projects"))
+    assert path.lower().startswith(folder.lower()) and os.path.basename(path.replace("\\", "/")).startswith("Untitled "), res["document"]
+    assert res["document"]["dirty"] is False, res["document"]
+    assert res["nolgia_work"]["last"]["open_now"] is True, res["nolgia_work"]
+
+
+def _change_saved(caller, win, work):
+    """The project moved to e2e-saved.aep (save_as): NOLGIA's first change to
+    it backs it up (a byte copy into NOLGIA backups next to it), then saves it
+    in place; the project stays on its file."""
+    project = caller.ok("info")["document"]["path"]
+    with open(win.from_win(project), "rb") as handle:
+        on_disk = handle.read()
+    res = caller.ok("run", {"code": 'app.project.activeItem.layers.addSolid([0, 0.5, 1], "E2E Change", 64, 64, 1); 1'})
+    assert res["saved"]["path"].lower() == project.lower(), res
+    backups = res["backups"]
+    assert len(backups) == 1 and "NOLGIA backups" in backups[0], res
+    with open(win.from_win(backups[0]), "rb") as handle:
+        assert handle.read() == on_disk, "the backup is the project before the change"
+    info = caller.ok("info")
+    assert info["document"]["path"].lower() == project.lower() and info["document"]["dirty"] is False, info["document"]
+    again = caller.ok("run", {"code": 'app.project.activeItem.layer("E2E Change").remove(); 1'})
+    assert "backups" not in again and again["saved"]["path"].lower() == project.lower(), again
+
+
+def _undo_closed(caller):
+    cmd = caller.fails("run", {"code": 'app.beginUndoGroup("E2E open group");\nnull.foo;'}, "on line 2")
+    assert "[NOLGIA] The code left 1 undo group open; NOLGIA closed it." in cmd["result"]["stderr"], cmd["result"]
+    assert caller.ok("run", {"code": "1"})["value"] == 1
+
+
+def _scope(caller):
+    comp = caller.ok("info")["active_comp"]
+    scope = comp["scope"]
+    assert scope["playhead_frame"] == comp["current_frame"], scope
+    assert scope["work_area_is_whole_comp"] is True and scope["selected_layers"] == comp["selected_layers"], scope
+    assert isinstance(scope["layers_under_playhead"], list) and scope["layers_under_playhead"], scope
 
 
 CLOSE_DOCUMENTS = {
