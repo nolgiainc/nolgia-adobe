@@ -373,7 +373,8 @@ project saved into NOLGIA projects, a change backed up first and saved in
 place after, a failed run leaving no undo group open, the scope in `info`,
 `save` with a path writing a copy, and a preview of a 1280x720 comp asked at
 640 rendered at half size), Premiere Pro 2026 (26.2.0; 19 checks) and
-Illustrator 2026 (30.0.0; 18 checks). Not run on macOS.
+Illustrator 2026 (30.0.0; 18 checks). macOS is untested for 0.3.0: it was
+released without a Mac run.
 
 0.2.1 (the panel's chat) on macOS 26.6.2 (Apple silicon), on October 29,
 2026, in After Effects 26.5.0, Premiere Pro 26.5.2 and Illustrator 30.8.2
@@ -437,7 +438,7 @@ run closes the undo groups it left open; `info` says what the person points at
 Premiere Pro sequences brought in through Dynamic Link. Unit tests against the
 mock API; the end-to-end test in After Effects 25.6, Premiere Pro 26.2.0 and
 Illustrator 30.0.0 on Windows 11 (see "For scripts, render machines and
-tests"). Not run on macOS.
+tests"). Released without a Mac run: macOS is untested for this version.
 
 0.2.9 (November 3, 2026): in After Effects, importing the result of a green
 screen or keep-me render (nolgia-api #1423: `matte_layer_asset_id`) also
