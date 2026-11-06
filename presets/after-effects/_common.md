@@ -48,10 +48,25 @@ for `nolgia_app_run` is ExtendScript.
 - Work in small steps: one `nolgia_app_run` per logical step, each returning a
   short summary in `result` (comp names, layer names and indexes, frame
   ranges). Each run is one undo step in After Effects.
-- Never delete, rename, move or re-time the person's existing comps, layers or
-  footage unless they asked. Build in a new comp named after the workflow (for
-  example `NOLGIA Shot 010 comp`) that uses their footage as layers, and put
-  every item you add in a project folder named after the workflow.
+- Never delete, rename, move, re-time, trim, split, precompose or turn off the
+  person's own comps, layers or footage, and never take their cuts out of their
+  comp, unless they asked for exactly that. Their edit stays as they made it.
+  Work on copies and new layers above or below theirs, or in a new comp named
+  after the workflow (for example `NOLGIA Shot 010 comp`) that uses their
+  footage as layers, and put every item you add in a project folder named after
+  the workflow. On 2026-11-06 an Agent turn precomposed all nine cuts of a
+  person's comp into a new comp, which took them out of the comp they had
+  edited.
+- A precomp is rarely needed. When it is, precompose copies you made
+  (`layer.duplicate()`, then `comp.layers.precompose([copy.index], name, true)`):
+  their layer stays where it was, untouched. The new precomp layer runs the
+  whole comp, so set its in and out points to the copy's. To build a comp per
+  cut, copy each cut in with `layer.copyToComp(newComp)`, which keeps its
+  timing and effects and leaves theirs in place. "Leave all attributes"
+  (`precompose([index], name, false)`, one layer only) keeps their layer's
+  place, timing, transform and effects, but swaps its footage for the new comp,
+  and a layer they never renamed takes the comp's name: use it only when they
+  ask, and say so.
 - Keep everything editable: effects stay live with their controls, masks stay
   masks, tracking stays as keyframes or expressions. No pre-rendering or
   "Convert to Layered Comp" unless the workflow says so.
@@ -80,13 +95,16 @@ for `nolgia_app_run` is ExtendScript.
 - A timecode (HH:MM:SS:FF, or SS:FF) is frames at the comp's frame rate:
   00:04:12 at 24 fps is 4 x 24 + 12 = frame 108, counted from the comp's
   start; subtract `start_timecode_frame` when the comp does not start at 0.
-- Change only that part. For part of a layer's time, split that range into its
-  own layer (duplicate it, set the copy's in and out points to the range, trim
-  the original around it) and put effects on that piece; a new comp for the
-  work is as long as the range. Never key, grade or track a whole layer when
-  the person named a part of it, and never move, remove or precompose layers
-  outside the scope (after `precompose`, the person's layers stay where they
-  were).
+- Change only that part. For part of a layer's time, put a copy over that
+  range: duplicate the layer (the copy lands right above it), set the copy's in
+  and out points to the range, and put the effects on the copy. Their layer
+  stays whole and untouched under it. A new layer that fills what a key takes
+  away (the new background) goes between the copy and their layer
+  (`bg.moveAfter(copy)`), with the same in and out points, so their layer never
+  shows through. A result that must be see-through with nothing of theirs
+  behind it needs their layer cut: ask first. A new comp for the work is as long
+  as the range. Never key, grade or track a whole layer when the person named a
+  part of it.
 - The whole comp only when the person asks for it or nothing narrower exists.
   When the scope is unclear and the change is heavy (a key, a grade, a track or
   a stack of effects on footage longer than about 10 seconds), ask one short
@@ -105,8 +123,11 @@ for `nolgia_app_run` is ExtendScript.
   `comp`: never open it in the person's viewer.
 - When you finish, say what changed and what did not: the comp and layers, the
   frames, the effects added; then "Not touched:" the rest (the other frames,
-  the person's other layers and comps). Name the file it is saved in (`saved`)
-  and the backup (`backups`).
+  the person's other layers and comps). List every structural change by name:
+  each layer, comp or precomp you added or copied, and where it sits. For their
+  own layers and cuts, say "none moved", or exactly what moved and where, when
+  they asked for it. Name the file it is saved in (`saved`) and the backup
+  (`backups`).
 
 ## A person on a green screen: keep them exactly as filmed
 
@@ -121,7 +142,8 @@ of a workflow that grades the element toward the plate:
   with `sampleImage` on both.
 - Keylight alone still moves the inside of the matte (its clip and despill):
   lay the untouched clip again ABOVE the keyed layer, no effects, with an
-  ALPHA track matte from a precomp of the clip keyed hard (Clip Black 40, Clip
+  ALPHA track matte from a new comp holding the clip (`comp.layers.add` of its
+  footage, never a precompose of their layer) keyed hard (Clip Black 40, Clip
   White 70) and choked about 6 px (`"ADBE Simple Choker"`). The person's solid
   pixels are then the clip's own; the keyed layer only shows at the edge.
 - Read the light direction on both before saying anything about it (the
@@ -164,9 +186,13 @@ of a workflow that grades the element toward the plate:
 - Track mattes can point at any layer: `layer.setTrackMatte(matteLayer,
   TrackMatteType.LUMA)` (or `ALPHA`), and the matte layer is switched off for you.
   `comp.layers.precompose(indices, name, true)` moves layers into a new comp
-  and leaves one layer in their place.
+  and leaves one layer in their place: run it only on copies you made, never
+  on the person's own layers.
 - A step that fails halfway keeps what it changed before the error. Write steps
   so they can run twice (find the layer or effect before adding it again).
+- `sampleImage` is an expression method: in ExtendScript a layer has none
+  ("Function layer.sampleImage is undefined"). Read pixels through an
+  expression, or look with `nolgia_app_preview`.
 - Menu commands (`app.executeCommand(app.findMenuCommandId("..."))`, for layer
   styles and the like) act on the selected layers and need the comp open in the
   viewer (`comp.openInViewer()`).
