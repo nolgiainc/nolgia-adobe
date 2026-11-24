@@ -690,7 +690,8 @@ def run_proof(caller, checks, win, work, wwork, numbers, start_and_connect, proc
 
     def full_tracks():
         r = caller.ok("sound_design", {"action": "read", "sequence": state["seq"]}, timeout=60)
-        return [(str(t["id"]), t["name"], [(c["start"], c["end"], c["media"]) for c in t["clips"]]) for t in r["audio_tracks"]]
+        return [(str(t["id"]), t["name"], [(c["start_frame"], c["end_frame"], c["in_ms"], c["media_path"]) for c in t["clips"]])
+                for t in r["audio_tracks"]]
 
     front_record = os.path.join(work, "project", "NOLGIA Sounds", PLAN_FRONT, "placement.json")
 
