@@ -364,6 +364,8 @@ def main():
         if saved_settings is not None:
             with open(settings, "wb") as handle:
                 handle.write(saved_settings)
+        elif os.path.exists(settings):
+            os.remove(settings)  # this run made it: Premiere Pro's NOLGIA had none
         server.stop()
         print(json.dumps(numbers, indent=1), flush=True)
         if report:
