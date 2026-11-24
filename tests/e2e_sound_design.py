@@ -273,10 +273,14 @@ def main():
            "NOLGIA_ASK_BEFORE_RUN": "0", "NOLGIA_ALLOW_AGENT": "1", "NOLGIA_INSTANCE_ID": INSTANCE,
            "NOLGIA_UPDATE_CHECK": "0", "NOLGIA_SOUND_DESIGN_LOCAL": "1"}
 
-    def start_and_connect(old_id=None):
+    def start_and_connect(again=False):
         os.makedirs(os.path.dirname(env_path), exist_ok=True)
         with open(env_path, "w", encoding="utf-8") as handle:
             json.dump(env, handle)
+        # The API keeps one session per instance: started again, Premiere Pro
+        # registers the same session anew (a new heartbeat with its version).
+        with server.state.cond:
+            beats = len(server.state.heartbeats)
         win.start(proc)
         end = time.time() + 300
         session = None
@@ -285,8 +289,10 @@ def main():
                 if w["cls"] == win.DIALOG:
                     print("     dialog: %s %s" % (w["title"], w["text"][:200]), flush=True)
                     win.press_enter(proc["process"], w["hwnd"])
+            with server.state.cond:
+                fresh = len(server.state.heartbeats) > beats
             for s in caller.sessions():
-                if s["instance_id"] == INSTANCE and s["app_version"] and s["id"] != old_id:
+                if s["instance_id"] == INSTANCE and s["app_version"] and (fresh or not again):
                     session = s
             time.sleep(3)
         if os.path.exists(env_path):
@@ -471,9 +477,9 @@ def run_proof(caller, checks, win, work, wwork, numbers, start_and_connect, proc
     def reopen_edit_remove():
         before = caller.ok("run", {"code": NODE_IDS % {"id": json.dumps(state["seq"])}}, timeout=60)["value"]
         caller.ok("run", {"code": "app.project.save();"}, timeout=60)
-        old = caller.session_id
         E.quit_app(win, caller, "premiere", proc, close_documents=False, via_plugin=True)
-        start_and_connect(old_id=old)
+        assert not win.running(proc), "Premiere Pro did not quit"
+        start_and_connect(again=True)
         opened = caller.ok("open", {"path": win.to_win(os.path.join(work, "project", "sound proof.prproj"))}, timeout=180)
         numbers["reopened"] = opened.get("path")
         after = caller.ok("run", {"code": NODE_IDS % {"id": json.dumps(state["seq"])}}, timeout=60)["value"]
@@ -493,14 +499,16 @@ def run_proof(caller, checks, win, work, wwork, numbers, start_and_connect, proc
                                                             "other": json.dumps(state["other"])}}, timeout=60)["value"]
         numbers["qe_follows_openSequence"] = other
         assert other["now"] == "Other cut", other
+        a1_edited = caller.ok("sound_design", {"action": "read", "sequence": state["seq"]}, timeout=60)["audio_tracks"][0]["clips"]
+        numbers["a1_after_edit"] = len(a1_edited)
         r = caller.ok("sound_design", {"action": "remove", "run_id": PLAN}, timeout=300)
         numbers["remove"] = r
         assert r["removed"] == len(CUES) and r["left"] == [], r
         assert sorted(r["tracks_removed"]) == ["NOLGIA Ambience", "NOLGIA SFX 1", "NOLGIA SFX 2"], r
         seqs = caller.ok("sound_design", {"action": "read", "sequence": state["seq"]}, timeout=60)
         assert len(seqs["audio_tracks"]) == 3, [t["name"] for t in seqs["audio_tracks"]]
-        assert len(seqs["audio_tracks"][0]["clips"]) == 2, seqs["audio_tracks"][0]["clips"]
-        assert seqs["audio_tracks"][0]["clips"][0] == state["a1"][0], "the editor's first A1 clip changed"
+        # The editor's overwrite split the bars clip: A1 is as the editor left it.
+        assert seqs["audio_tracks"][0]["clips"] == a1_edited, seqs["audio_tracks"][0]["clips"]
         oth = caller.ok("sound_design", {"action": "read", "sequence": state["other"]}, timeout=60)
         assert len(oth["audio_tracks"]) == state["other_audio"], [t["name"] for t in oth["audio_tracks"]]
         folder = win.from_win(state["folder"])
@@ -508,6 +516,8 @@ def run_proof(caller, checks, win, work, wwork, numbers, start_and_connect, proc
     checks.check("premiere",
                  "reopened, the editor's clip on A1, another sequence active: remove takes out exactly the run",
                  reopen_edit_remove)
+    numbers["other_after_remove"] = [t["name"] for t in caller.ok(
+        "sound_design", {"action": "read", "sequence": state["other"]}, timeout=60)["audio_tracks"]]
 
     def stereo_stays_one_clip():
         key = win.to_win(os.path.join(win.from_win(state["folder"]), "t0 stereo.wav")).replace("\\", "/").lower()
@@ -515,7 +525,7 @@ def run_proof(caller, checks, win, work, wwork, numbers, start_and_connect, proc
                           timeout=60)["value"]
         numbers["stereo_as_two_mono_clips"] = split
         r = caller.ok("sound_design", {"action": "place", "plan_id": PLAN, "sequence": state["seq"]}, timeout=600)
-        numbers["replace"] = {k: r.get(k) for k in ("placed", "not_placed", "tracks")}
+        numbers["replace"] = {k: r.get(k) for k in ("placed", "not_placed", "tracks", "audio_mapping_fixed", "audio_mapping_errors")}
         assert r["placed"] == len(CUES), r["cues"]
         after = caller.ok("sound_design", {"action": "read", "sequence": state["seq"]}, timeout=60)
         names = [(t["name"], len(t["clips"])) for t in after["audio_tracks"]]

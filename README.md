@@ -270,8 +270,10 @@ them out again. `action` is one of:
     never a name the sequence has), and another for the lane where sounds
     would overlap. A sound never goes on a track with clips on it that this
     run did not place. Gain is the clip's Volume > Level (Premiere's value is
-    10^((dB - 15) / 20)), fades are Level keyframes from silence (Premiere
-    times a clip's keyframes from the start of its media). A mono sound
+    10^((dB - 15) / 20); -96 to +15 dB, and above the +6 dB the Effect
+    Controls slider stops at: +12 dB measured +12), fades are Level
+    keyframes from silence (Premiere times a clip's keyframes from the start
+    of its media). A mono sound
     plays centred on the stereo track, 3 dB lower on each side (Premiere's
     pan law).
   - Time is kept for the Premiere side (60 s plus 1 s a sound): downloads
@@ -568,8 +570,10 @@ design in Premiere Pro" workflow (`presets/premiere/sound-design.md`) and its
 starter in the Premiere panel's chat, which says what it does and what a turn
 costs before anything is sent. Unit tests against the mock API (real HTTPS
 downloads included); the end-to-end proof in Premiere Pro 26.2 on Windows 11
-(`tests/e2e_sound_design.py`). Not yet run on macOS: the steps are in
-`tests/MAC-TEST-0.4.0.md`.
+(`tests/e2e_sound_design.py`: the mix measured; the project quit, reopened
+and edited on A1 with another sequence on screen before `remove`; a stereo
+sound split into mono clips at import placed as one clip). Not yet run on
+macOS: the steps are in `tests/MAC-TEST-0.4.0.md`.
 
 0.2.9 (November 3, 2026): in After Effects, importing the result of a green
 screen or keep-me render (nolgia-api #1423: `matte_layer_asset_id`) also

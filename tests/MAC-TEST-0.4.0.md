@@ -71,7 +71,7 @@ plugin talks to the mock API on the Mac itself.
   start from silence and reach the level exactly at their end. The Mac must
   measure the same within 0.2 dB. Anything else is a finding: write it down
   with the numbers. The `gain +12 dB asked` line is a measurement, not a
-  check: compare it with the Windows number in the PR.
+  check: on Windows it measured -3.05 (+12 dB, above the slider's +6).
 
 ## Questions only a Mac answers
 
@@ -97,8 +97,8 @@ Write down the answer to each, with what the report shows:
    of the sounds in `NOLGIA Sounds/<plan id>`?
 4. **Clip ids after reopening.** The report's `node_ids` says how many of
    Premiere's clip ids were the same after the project was opened again
-   (`same_after_reopen` of `clips`). On Windows: see the PR. Remove never
-   relies on them; this is for the record.
+   (`same_after_reopen` of `clips`). On Windows (Premiere Pro 26.2) all 10
+   were the same. Remove never relies on them; this is for the record.
 5. **QE and the sequence on screen.** `qe_follows_openSequence` says which
    sequence QE was on right after `openSequence` in the same script. The
    remove check proves NOLGIA's tracks went from the right sequence while
