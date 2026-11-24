@@ -3,11 +3,14 @@
 //
 // Sound design in Premiere Pro (`sound_design`): the parts that need no app.
 //
-// NOLGIA watches a small preview of the sequence and writes a cue sheet; its
-// package route (format `manifest`) answers `files[]`, one per cue: a WAV
-// `url`, a relative `file` name, `start_ms` on the person's timeline,
-// `source_in_ms` and `source_out_ms`, `gain_db`, `fade_in_ms`, `fade_out_ms`,
-// `role` and `lane`. This module checks those, makes the names safe to write
+// NOLGIA watches a small preview of the sequence and writes a cue sheet. The
+// plugin asks the plan's package route itself (format `manifest`, with its
+// own sign-in): `files[]`, one per cue: a WAV `url`, a relative `file` name,
+// `start_ms` on the person's timeline, `source_in_ms` and `source_out_ms`,
+// `gain_db`, `fade_in_ms`, `fade_out_ms`, `role` and `lane`. The agent never
+// hands the plugin a link: `place` takes the plan id, the package route's own
+// choices (`picks`, `skip`) and placement-only `overrides`. This module
+// checks those, makes the names safe to write
 // on Windows and macOS, turns milliseconds into frames and Premiere's ticks,
 // plans which new audio track each sound goes on, works out the volume and
 // fade keyframes, and keeps the record of what a run placed, so a repeated
@@ -33,7 +36,14 @@ const AUDIO_EXTS = [".wav", ".wave", ".aif", ".aiff", ".mp3", ".m4a"];
 const SOUNDS_FOLDER = "NOLGIA Sounds";
 const RECORD_FILE = "placement.json";
 const CREDITS_FILE = "CREDITS.txt";
-const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
+// A run id names a folder: letters, digits, dot, dash, underscore; it starts
+// with a letter or digit and does not end with a dot (Windows drops it).
+const RUN_ID = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,78}[A-Za-z0-9_-])?$/;
+const PLAN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CUE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const OVERRIDE_KEYS = ["start_ms", "gain_db", "fade_in_ms", "fade_out_ms", "lane"];
+const PICK_KEYS = ["sound_id", "asset_id", "gain_db", "fade_in_ms", "fade_out_ms"];
+const MAX_OFFSET_MS = 24 * 3600 * 1000;
 const MAX_FILES = 300;
 const MAX_FILE_BYTES = 300 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024;
@@ -193,35 +203,155 @@ function validateArgs(args) {
     return out;
   }
   if (action === "read") return out;
-  out.run_id = runIdArg(args.run_id);
-  if (action === "remove") return out;
-  const files = args.files;
-  if (!Array.isArray(files) || !files.length) {
-    fail("`files` is required: the `files` list of NOLGIA's sound design package (format manifest).");
+  if (action === "remove") {
+    out.run_id = runIdArg(args.run_id);
+    return out;
   }
-  if (files.length > MAX_FILES) fail("`files` lists at most " + MAX_FILES + " sounds; place the rest with a second run.");
-  const seen = new Set();
-  out.files = files.map((f, i) => {
-    const cue = normalizeCue(f, i);
-    if (seen.has(cue.cue_id)) cue.problem = cue.problem || "The cue " + cue.cue_id + " is listed twice; only the first is placed.";
-    seen.add(cue.cue_id);
-    return cue;
-  });
-  const credits = args.credits;
-  if (credits !== undefined && credits !== null) {
-    if (!Array.isArray(credits) || credits.some((c) => typeof c !== "string")) fail("`credits` must be a list of text lines.");
-    out.credits = credits.map((c) => c.trim()).filter(Boolean).slice(0, MAX_FILES).map((c) => cut(c, 500));
-  } else {
-    out.credits = [];
+  // place: the plugin asks the plan's package route itself; links never
+  // come from the agent.
+  for (const key of ["files", "url", "urls"]) {
+    if (args[key] !== undefined && args[key] !== null) {
+      fail("`place` takes no `" + key + "`: pass the plan's `plan_id`, and NOLGIA fetches the plan's sounds itself.");
+    }
   }
+  if (typeof args.plan_id !== "string" || !PLAN_ID.test(args.plan_id)) {
+    fail("`plan_id` is required: the id of the finished sound design plan.");
+  }
+  out.plan_id = args.plan_id.toLowerCase();
+  out.run_id = args.run_id === undefined || args.run_id === null || args.run_id === "" ? out.plan_id : runIdArg(args.run_id);
+  if (args.timeline_offset_ms !== undefined && args.timeline_offset_ms !== null) {
+    if (!finite(args.timeline_offset_ms) || args.timeline_offset_ms < 0 || args.timeline_offset_ms > MAX_OFFSET_MS) {
+      fail("`timeline_offset_ms` must be a number of milliseconds from 0 to 24 hours (the preview's timeline_offset_ms).");
+    }
+    out.timeline_offset_ms = args.timeline_offset_ms;
+  }
+  out.picks = picksArg(args.picks);
+  out.skip = skipArg(args.skip);
+  out.overrides = overridesArg(args.overrides);
   return out;
 }
 
 function runIdArg(value) {
-  if (typeof value !== "string" || !RUN_ID.test(value)) {
-    fail("`run_id` is required: letters, digits, dot, dash or underscore, at most 80 (the sound design plan's id works).");
+  if (typeof value !== "string" || !RUN_ID.test(value) || RESERVED.test(value.split(".")[0])) {
+    fail(
+      "`run_id` must be letters, digits, dot, dash or underscore, at most 80, starting with a letter or digit, " +
+        "not ending with a dot and not a device name such as CON (the sound design plan's id works)."
+    );
   }
   return value;
+}
+
+function plainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value);
+}
+
+function cueIdKey(key, what) {
+  if (!CUE_ID.test(key)) fail("`" + what + "` names cues by their id (s01, e03 ...); " + JSON.stringify(cut(key, 40)) + " is not one.");
+}
+
+function numberIn(value, key, lo, hi) {
+  if (!finite(value) || value < lo || value > hi) fail("`" + key + "` must be a number from " + lo + " to " + hi + ".");
+  return value;
+}
+
+// `picks`, as the package route takes it: cue id to {sound_id or asset_id,
+// gain_db, fade_in_ms, fade_out_ms}. Checked here so a mistake is said in
+// plain words before anything is asked.
+function picksArg(value) {
+  if (value === undefined || value === null) return null;
+  if (!plainObject(value)) fail("`picks` must be an object: cue id to the sound it takes.");
+  const ids = Object.keys(value);
+  if (ids.length > MAX_FILES) fail("`picks` names at most " + MAX_FILES + " cues.");
+  const out = {};
+  for (const id of ids) {
+    cueIdKey(id, "picks");
+    const pick = value[id];
+    if (!plainObject(pick)) fail("`picks." + id + "` must be an object.");
+    const p = {};
+    for (const key of Object.keys(pick)) {
+      if (!PICK_KEYS.includes(key)) fail("`picks." + id + "` takes only " + PICK_KEYS.join(", ") + ".");
+    }
+    if (pick.sound_id !== undefined) {
+      if (typeof pick.sound_id !== "string" || !pick.sound_id || pick.sound_id.length > 128) fail("`picks." + id + ".sound_id` must be a Sound Library id.");
+      p.sound_id = pick.sound_id;
+    }
+    if (pick.asset_id !== undefined) {
+      if (typeof pick.asset_id !== "string" || !PLAN_ID.test(pick.asset_id)) fail("`picks." + id + ".asset_id` must be a Library asset id.");
+      if (p.sound_id) fail("`picks." + id + "` names a sound_id or an asset_id, not both.");
+      p.asset_id = pick.asset_id;
+    }
+    if (pick.gain_db !== undefined) p.gain_db = numberIn(pick.gain_db, "picks." + id + ".gain_db", -24, 12);
+    if (pick.fade_in_ms !== undefined) p.fade_in_ms = numberIn(pick.fade_in_ms, "picks." + id + ".fade_in_ms", 0, 30000);
+    if (pick.fade_out_ms !== undefined) p.fade_out_ms = numberIn(pick.fade_out_ms, "picks." + id + ".fade_out_ms", 0, 30000);
+    out[id] = p;
+  }
+  return ids.length ? out : null;
+}
+
+function skipArg(value) {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length > 200 || value.some((v) => typeof v !== "string")) {
+    fail("`skip` must be a list of at most 200 cue ids.");
+  }
+  value.forEach((id) => cueIdKey(id, "skip"));
+  return value.length ? Array.from(new Set(value)) : null;
+}
+
+// `overrides`: cue id to where and how loud it goes (start_ms, gain_db,
+// fade_in_ms, fade_out_ms, lane). Placement only: never a link or a name.
+function overridesArg(value) {
+  if (value === undefined || value === null) return null;
+  if (!plainObject(value)) fail("`overrides` must be an object: cue id to {" + OVERRIDE_KEYS.join(", ") + "}.");
+  const ids = Object.keys(value);
+  if (ids.length > MAX_FILES) fail("`overrides` names at most " + MAX_FILES + " cues.");
+  const out = {};
+  for (const id of ids) {
+    cueIdKey(id, "overrides");
+    const o = value[id];
+    if (!plainObject(o)) fail("`overrides." + id + "` must be an object.");
+    const v = {};
+    for (const key of Object.keys(o)) {
+      if (!OVERRIDE_KEYS.includes(key)) fail("`overrides` change placement only (" + OVERRIDE_KEYS.join(", ") + "); `" + key + "` is not one.");
+    }
+    if (o.start_ms !== undefined) v.start_ms = numberIn(o.start_ms, "overrides." + id + ".start_ms", 0, MAX_OFFSET_MS);
+    if (o.gain_db !== undefined) v.gain_db = numberIn(o.gain_db, "overrides." + id + ".gain_db", MIN_GAIN_DB, MAX_GAIN_DB);
+    if (o.fade_in_ms !== undefined) v.fade_in_ms = numberIn(o.fade_in_ms, "overrides." + id + ".fade_in_ms", 0, 600000);
+    if (o.fade_out_ms !== undefined) v.fade_out_ms = numberIn(o.fade_out_ms, "overrides." + id + ".fade_out_ms", 0, 600000);
+    if (o.lane !== undefined) {
+      if (!Number.isInteger(o.lane) || o.lane < 1 || o.lane > 64) fail("`overrides." + id + ".lane` must be a whole number from 1 to 64.");
+      v.lane = o.lane;
+    }
+    out[id] = v;
+  }
+  return ids.length ? out : null;
+}
+
+// The package's `files`, checked one by one (a problem with one sound does
+// not stop the others), with the agent's overrides applied. Resolves
+// {cues, unknown: override ids the package has no cue for}.
+function packageCues(files, overrides) {
+  if (!Array.isArray(files)) fail("NOLGIA's package for this plan has no list of sounds.");
+  if (files.length > MAX_FILES) fail("The plan has more than " + MAX_FILES + " sounds; NOLGIA places at most that many in one run.");
+  const seen = new Set();
+  const cues = files.map((f, i) => {
+    const cue = normalizeCue(f, i);
+    if (seen.has(cue.cue_id)) cue.problem = cue.problem || "The cue " + cue.cue_id + " is listed twice; only the first is placed.";
+    seen.add(cue.cue_id);
+    const o = overrides && overrides[cue.cue_id];
+    if (o && !cue.problem) {
+      for (const key of OVERRIDE_KEYS) if (o[key] !== undefined) cue[key] = o[key];
+      cue.overridden = Object.keys(o);
+    }
+    return cue;
+  });
+  const unknown = Object.keys(overrides || {}).filter((id) => !seen.has(id));
+  return { cues, unknown };
+}
+
+// Credit lines from the package, trimmed.
+function creditLines(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((c) => typeof c === "string").map((c) => c.trim()).filter(Boolean).slice(0, MAX_FILES).map((c) => cut(c, 500));
 }
 
 // One entry of `files`, checked. Keeps what can be read and says what is
@@ -486,12 +616,56 @@ function parseRecord(value, runId) {
   return value;
 }
 
+// A media path as a key to compare: forward slashes, one Unicode form (NFC:
+// Premiere on macOS may answer the decomposed form of a name written
+// composed), case ignored (Windows and macOS ignore it).
+function mediaKey(p) {
+  return String(p === undefined || p === null ? "" : p).normalize("NFC").replace(/\\/g, "/").toLowerCase();
+}
+
 // Cues of a run that are on the timeline now (as far as the record knows).
 function placedCues(record) {
   if (!record) return [];
   return Object.keys(record.cues)
     .filter((id) => record.cues[id].status === "placed")
     .map((id) => Object.assign({ cue_id: id }, record.cues[id]));
+}
+
+// Cues a `sd_place` was sent for whose answer never came back (the command
+// ran out of time): on the timeline or not, as Premiere says now.
+function pendingCues(record) {
+  if (!record) return [];
+  return Object.keys(record.cues)
+    .filter((id) => record.cues[id].status === "pending")
+    .map((id) => Object.assign({ cue_id: id }, record.cues[id]));
+}
+
+// Settles pending cues against what is on the run's tracks now (`state` as
+// for liveRunTracks): a clip of that file at that start on that track is the
+// cue, placed; anything else was not placed. Resolves how many of each.
+function resolvePending(record, state, now) {
+  const out = { placed: 0, not_placed: 0 };
+  if (!record) return out;
+  const found = new Map(((state && state.tracks) || []).map((t) => [String(t.id), t]));
+  for (const c of pendingCues(record)) {
+    const live = found.get(String(c.track_id));
+    const clip = live && (live.clips || []).find((x) => String(x.start) === String(c.start_ticks) && mediaKey(x.media) === mediaKey(c.media_path));
+    const cue = record.cues[c.cue_id];
+    if (clip) {
+      cue.status = "placed";
+      cue.node_id = clip.node_id || null;
+      cue.end_ticks = clip.end || cue.end_ticks;
+      cue.placed_at = cue.placed_at || now;
+      cue.note = "Its placing took longer than the command; it was found on the timeline afterwards.";
+      out.placed += 1;
+    } else {
+      cue.status = "not_placed";
+      cue.note = "Its placing took longer than the command and it is not on the timeline.";
+      out.not_placed += 1;
+    }
+    delete cue.pending_at;
+  }
+  return out;
 }
 
 // Splits `cues` of a place into those to place now and those the run
@@ -513,20 +687,31 @@ function activeTracks(record) {
   return record ? record.tracks.filter((t) => !t.removed_at && !t.released_at) : [];
 }
 
+// Is `clip` (the host's {start, media}) one this run placed on track `trackId`?
+// Known by its file and its start on that track, never by Premiere's node
+// id alone (node ids are not kept when a project is opened again).
+function isRunClip(record, trackId, clip) {
+  for (const id of Object.keys(record.cues)) {
+    const c = record.cues[id];
+    if ((c.status === "placed" || c.status === "pending") && String(c.track_id) === String(trackId) &&
+        String(c.start_ticks) === String(clip.start) && mediaKey(c.media_path) === mediaKey(clip.media)) return true;
+  }
+  return false;
+}
+
 // The run's tracks that are still in the sequence, with what is on them now,
 // for planTracks. `state` is the host's {tracks: [{id, name, clips: [{start,
-// end, node_id}]}]} (ticks); tracks it no longer finds are left out, and so
-// is a track holding any clip this run did not place (the editor's now: a
-// new sound never goes on a track with someone else's clips).
+// end, node_id, media}]}]} (ticks); tracks it no longer finds are left out,
+// and so is a track holding any clip this run did not place (the editor's
+// now: a new sound never goes on a track with someone else's clips).
 function liveRunTracks(record, state, timebase) {
   if (!record) return [];
   const found = new Map((state.tracks || []).map((t) => [String(t.id), t]));
-  const ours = new Set(placedCues(record).map((c) => String(c.node_id)));
   const out = [];
   for (const t of activeTracks(record)) {
     const live = found.get(String(t.id));
     if (!live) continue;
-    if ((live.clips || []).some((c) => !ours.has(String(c.node_id)))) continue;
+    if ((live.clips || []).some((c) => !isRunClip(record, t.id, c))) continue;
     out.push({
       id: t.id,
       name: live.name || t.name,
@@ -536,6 +721,35 @@ function liveRunTracks(record, state, timebase) {
     });
   }
   return out;
+}
+
+// What `remove` may take out: each clip the run placed, found on the run's
+// own track (same id, still carrying the name NOLGIA gave it), at the start
+// NOLGIA placed it, of the file NOLGIA placed. A clip that does not agree on
+// all of these (moved, trimmed at its start, its track renamed) is left
+// alone and reported. Resolves {clips: [{key, track_id, track_name, start,
+// media}], left: [{key, name, reason}]}; `media` is the path exactly as
+// Premiere answered it, which the host checks again before removing.
+function matchRunClips(record, state) {
+  const found = new Map(((state && state.tracks) || []).map((t) => [String(t.id), t]));
+  const names = {};
+  for (const t of record.tracks) names[String(t.id)] = t.name;
+  const clips = [];
+  const left = [];
+  for (const c of placedCues(record)) {
+    const live = found.get(String(c.track_id));
+    let reason = null;
+    let clip = null;
+    if (!live) reason = "its track (" + (names[String(c.track_id)] || c.track_name || "?") + ") is no longer in the sequence";
+    else if (String(live.name) !== String(names[String(c.track_id)])) reason = "its track was renamed to " + live.name + ", so it is not NOLGIA's to change";
+    else {
+      clip = (live.clips || []).find((x) => String(x.start) === String(c.start_ticks) && mediaKey(x.media) === mediaKey(c.media_path));
+      if (!clip) reason = "it is not where NOLGIA placed it on " + live.name + " (moved, trimmed at its start or deleted)";
+    }
+    if (clip) clips.push({ key: c.cue_id, track_id: c.track_id, track_name: live.name, start: String(clip.start), media: clip.media, node_id: clip.node_id || null });
+    else left.push({ key: c.cue_id, name: c.name || c.cue_id, reason });
+  }
+  return { clips, left };
 }
 
 function noteHistory(record, entry) {
@@ -555,9 +769,10 @@ function applyRemoval(record, outcome, now) {
       c.status = "removed";
       c.removed_at = now;
     } else if (gone.has(id)) {
-      c.status = "removed";
-      c.removed_at = now;
-      c.note = "It was no longer on the timeline when the run was taken out.";
+      // Left alone (not where NOLGIA put it): no longer the run's to change.
+      c.status = "left";
+      c.left_at = now;
+      c.note = "It was not where NOLGIA placed it when the run was taken out, so it was left in the sequence.";
     }
   }
   const tracksRemoved = new Set((outcome.tracks_removed || []).map(String));
@@ -663,6 +878,17 @@ function localSourceOk(p) {
 }
 
 module.exports = {
+  PLAN_ID,
+  MIN_GAIN_DB,
+  MAX_GAIN_DB,
+  OVERRIDE_KEYS,
+  packageCues,
+  creditLines,
+  mediaKey,
+  pendingCues,
+  resolvePending,
+  isRunClip,
+  matchRunClips,
   TICKS_PER_SECOND,
   ACTIONS,
   RANGES,

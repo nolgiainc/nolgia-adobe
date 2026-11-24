@@ -106,7 +106,8 @@ test("a sound file must look like the sound its name says", () => {
   assert.equal(sd.looksLikeAudio(wav, ".mp3"), false);
 });
 
-test("sound_design arguments: actions, run ids and cues", () => {
+test("sound_design arguments: actions, run ids, the plan and placement-only overrides", () => {
+  const PLAN = "4f8a2c1e-0b1d-4c55-9a3e-2b7c9d0e1f23";
   assert.ok(c.capabilitiesFor(PR).includes("sound_design"));
   assert.ok(!c.capabilitiesFor(APPS.AEFT).includes("sound_design"), "Premiere Pro only");
   assert.deepEqual(c.validate(PR, "sound_design", { action: "read" }), { action: "read", sequence: null });
@@ -114,21 +115,59 @@ test("sound_design arguments: actions, run ids and cues", () => {
   assert.deepEqual(c.validate(PR, "sound_design", { action: "remove", run_id: "plan-1" }), { action: "remove", sequence: null, run_id: "plan-1" });
   assert.throws(() => c.validate(PR, "sound_design", {}), /`action` must be one of: read, preview, place, remove/);
   assert.throws(() => c.validate(PR, "sound_design", { action: "preview", range: "work_area" }), /`range` must be one of/);
-  assert.throws(() => c.validate(PR, "sound_design", { action: "remove" }), /`run_id` is required/);
-  assert.throws(() => c.validate(PR, "sound_design", { action: "remove", run_id: "../x" }), /`run_id`/);
-  assert.throws(() => c.validate(PR, "sound_design", { action: "place", run_id: "r1" }), /`files` is required/);
-  assert.throws(() => c.validate(PR, "sound_design", { action: "place", run_id: "r1", files: new Array(301).fill({}) }), /at most 300/);
+  assert.throws(() => c.validate(PR, "sound_design", { action: "remove" }), /`run_id` must be/);
+  // Run ids name a folder: no paths, device names or a trailing dot.
+  for (const bad of ["../x", "CON", "nul", "com1", "Lpt9.txt", "run.", "a/b", "-x", "x".repeat(81)]) {
+    assert.throws(() => c.validate(PR, "sound_design", { action: "remove", run_id: bad }), /`run_id` must be/, bad);
+  }
+  for (const ok of ["plan-1", "r", "console", "com10", "a.b_c-d", PLAN]) {
+    assert.equal(c.validate(PR, "sound_design", { action: "remove", run_id: ok }).run_id, ok);
+  }
   assert.throws(() => c.validate(APPS.AEFT, "sound_design", { action: "read" }), /cannot do "sound_design"/);
 
+  // place: the plan id; the run id defaults to it. Links never come from the agent.
+  assert.deepEqual(c.validate(PR, "sound_design", { action: "place", plan_id: PLAN.toUpperCase(), sequence: "seq-1" }), {
+    action: "place", sequence: "seq-1", plan_id: PLAN, run_id: PLAN, picks: null, skip: null, overrides: null,
+  });
+  assert.throws(() => c.validate(PR, "sound_design", { action: "place", run_id: "r1" }), /`plan_id` is required/);
+  assert.throws(() => c.validate(PR, "sound_design", { action: "place", plan_id: "not-a-plan" }), /`plan_id` is required/);
+  assert.throws(() => c.validate(PR, "sound_design", { action: "place", plan_id: PLAN, files: [{ url: "https://x.test/a.wav" }] }), /takes no `files`/);
+  assert.throws(() => c.validate(PR, "sound_design", { action: "place", plan_id: PLAN, url: "https://x.test/a.wav" }), /takes no `url`/);
+  const full = c.validate(PR, "sound_design", {
+    action: "place",
+    plan_id: PLAN,
+    run_id: "my-run",
+    timeline_offset_ms: 1001,
+    picks: { e03: { sound_id: "fs-123", gain_db: -3 }, s01: { asset_id: PLAN, fade_in_ms: 500 } },
+    skip: ["e07", "e07"],
+    overrides: { e03: { start_ms: 4000, lane: 2 }, s01: { gain_db: -18, fade_out_ms: 2000 } },
+  });
+  assert.equal(full.run_id, "my-run");
+  assert.equal(full.timeline_offset_ms, 1001);
+  assert.deepEqual(full.picks, { e03: { sound_id: "fs-123", gain_db: -3 }, s01: { asset_id: PLAN, fade_in_ms: 500 } });
+  assert.deepEqual(full.skip, ["e07"]);
+  assert.deepEqual(full.overrides, { e03: { start_ms: 4000, lane: 2 }, s01: { gain_db: -18, fade_out_ms: 2000 } });
+  const place = (extra) => c.validate(PR, "sound_design", Object.assign({ action: "place", plan_id: PLAN }, extra));
+  assert.throws(() => place({ overrides: { e03: { url: "https://evil.test/x.wav" } } }), /placement only.*`url` is not one/);
+  assert.throws(() => place({ overrides: { e03: { file: "../x.wav" } } }), /`file` is not one/);
+  assert.throws(() => place({ overrides: { "../e03": { lane: 1 } } }), /names cues by their id/);
+  assert.throws(() => place({ overrides: { e03: { lane: 0 } } }), /lane` must be a whole number/);
+  assert.throws(() => place({ overrides: { e03: { gain_db: 40 } } }), /gain_db` must be a number from -96 to/);
+  assert.throws(() => place({ picks: { e03: { sound_id: "a", asset_id: PLAN } } }), /not both/);
+  assert.throws(() => place({ picks: { e03: { gain_db: 20 } } }), /from -24 to 12/);
+  assert.throws(() => place({ picks: { e03: { url: "https://x" } } }), /takes only sound_id, asset_id/);
+  assert.throws(() => place({ skip: "e03" }), /`skip` must be a list/);
+  assert.throws(() => place({ timeline_offset_ms: -1 }), /timeline_offset_ms/);
+});
+
+test("the package's files: each checked on its own, the overrides applied, unknown overrides named", () => {
   const good = {
     cue_id: "c1", name: "Door slam", file: "NOLGIA Sounds/Door slam.wav", url: "https://cdn.example/a.wav",
     bytes: 1000, start_ms: 1200, source_in_ms: 0, source_out_ms: 800, gain_db: -6, fade_in_ms: 0, fade_out_ms: 120,
     role: "sfx", lane: 1, credit: "", licence: "CC0",
   };
-  const out = c.validate(PR, "sound_design", {
-    action: "place",
-    run_id: "4f8a2c1e-plan",
-    files: [
+  const { cues, unknown } = sd.packageCues(
+    [
       good,
       Object.assign({}, good, { cue_id: "c2", url: "http://cdn.example/a.wav" }),
       Object.assign({}, good, { cue_id: "c3", url: "https://me:pw@cdn.example/a.wav" }),
@@ -141,11 +180,12 @@ test("sound_design arguments: actions, run ids and cues", () => {
       "nonsense",
       Object.assign({}, good, { cue_id: "c9", role: "laser", lane: 0, gain_db: "loud", source_out_ms: undefined, duration_ms: 2500 }),
     ],
-    credits: [" Rain by someone (CC BY 4.0) ", "", 7 === 7 ? "Door by another (CC BY 4.0)" : ""],
-  });
-  const byId = Object.fromEntries(out.files.map((f) => [f.cue_id + ":" + f.index, f]));
+    { c1: { start_ms: 5000, gain_db: -12, lane: 3 }, zz: { lane: 2 } }
+  );
+  const byId = Object.fromEntries(cues.map((f) => [f.cue_id + ":" + f.index, f]));
   assert.equal(byId["c1:0"].problem, null);
   assert.deepEqual(byId["c1:0"].safe, { stem: "Door slam", ext: ".wav" });
+  assert.deepEqual([byId["c1:0"].start_ms, byId["c1:0"].gain_db, byId["c1:0"].lane], [5000, -12, 3], "overridden");
   assert.match(byId["c2:1"].problem, /not HTTPS/);
   assert.match(byId["c3:2"].problem, /user name or password/);
   assert.match(byId["c4:3"].problem, /start_ms/);
@@ -161,7 +201,16 @@ test("sound_design arguments: actions, run ids and cues", () => {
   assert.equal(c9.lane, 1);
   assert.equal(c9.gain_db, 0);
   assert.equal(c9.source_out_ms, 2500, "the sound's length when source_out_ms is missing");
-  assert.deepEqual(out.credits, ["Rain by someone (CC BY 4.0)", "Door by another (CC BY 4.0)"]);
+  assert.deepEqual(unknown, ["zz"]);
+  assert.deepEqual(sd.creditLines([" Rain by someone (CC BY 4.0) ", "", 7, "Door by another (CC BY 4.0)"]), ["Rain by someone (CC BY 4.0)", "Door by another (CC BY 4.0)"]);
+  assert.throws(() => sd.packageCues(new Array(301).fill({}), null), /more than 300 sounds/);
+  assert.throws(() => sd.packageCues(undefined, null), /no list of sounds/);
+});
+
+test("media paths compare in one Unicode form, either slash, any case", () => {
+  const nfd = "C:/Sounds/Cafe\u0301 door.wav".normalize("NFD");
+  assert.equal(sd.mediaKey(nfd), sd.mediaKey("c:\\sounds\\CAF\u00c9 DOOR.wav"));
+  assert.notEqual(sd.mediaKey("C:/Sounds/door.wav"), sd.mediaKey("C:/Sounds/door2.wav"));
 });
 
 test("a cue on the frame grid; shorter than a frame is not placed", () => {
@@ -260,14 +309,16 @@ test("the run's live tracks: what is on them now; tracks gone, removed or holdin
   record.tracks.push({ id: 9, name: "NOLGIA SFX 2", lane: 1, role: "sfx", removed_at: "t" });
   record.tracks.push({ id: 10, name: "NOLGIA SFX 3", lane: 1, role: "sfx" });
   record.tracks.push({ id: 11, name: "NOLGIA SFX 4", lane: 1, role: "sfx", released_at: "t" });
-  record.cues.c1 = { status: "placed", track_id: 7, node_id: "n5" };
+  record.cues.c1 = { status: "placed", track_id: 7, node_id: "n5", start_ticks: "0", media_path: "C:\\P\\NOLGIA Sounds\\r1\\door.wav" };
   const live = sd.liveRunTracks(
     record,
     {
       tracks: [
-        { id: 7, name: "SFX renamed", clips: [{ start: "0", end: "254270016001", node_id: "n5" }] },
+        // The run's clip is known by its file and start (the node id changed on reopening).
+        { id: 7, name: "SFX renamed", clips: [{ start: "0", end: "254270016001", node_id: "n99", media: "c:/p/nolgia sounds/r1/DOOR.wav" }] },
         { id: 9, name: "x", clips: [] },
-        { id: 10, name: "NOLGIA SFX 3", clips: [{ start: "0", end: "10", node_id: "editors-own" }] },
+        // Same node id as the run's clip, but the editor's file: not the run's.
+        { id: 10, name: "NOLGIA SFX 3", clips: [{ start: "0", end: "10", node_id: "n5", media: "C:/media/mine.wav" }] },
         { id: 11, name: "NOLGIA SFX 4", clips: [] },
       ],
     },
@@ -295,12 +346,54 @@ test("the record: repeat places nothing twice; remove marks what went out, so th
   assert.equal(record.tracks[1].released_at, "t1", "a kept track is the editor's now");
   assert.deepEqual(sd.activeTracks(record), []);
   assert.equal(record.cues.c1.status, "removed");
-  assert.equal(record.cues.c2.status, "removed");
-  assert.match(record.cues.c2.note, /no longer on the timeline/);
+  assert.equal(record.cues.c2.status, "left");
+  assert.match(record.cues.c2.note, /not where NOLGIA placed it/);
   assert.equal(record.tracks[0].removed_at, "t1");
   assert.deepEqual(sd.placedCues(record), []);
   assert.deepEqual(sd.splitRepeat([{ cue_id: "c1" }], record).todo.map((x) => x.cue_id), ["c1"]);
   assert.equal(record.history[0].action, "remove");
+});
+
+test("remove matches a clip on the run's own track by name, start and file, never by node id alone", () => {
+  const record = sd.newRecord({ runId: "r1", project: "p", sequence: { id: "s", name: "Edit" }, folder: "f", bin: ["b"], now: "t0" });
+  record.tracks.push({ id: 7, name: "NOLGIA SFX 1" }, { id: 8, name: "NOLGIA SFX 2" }, { id: 9, name: "NOLGIA Ambience" });
+  const door = "C:\\P\\NOLGIA Sounds\\r1\\door.wav";
+  record.cues.door = { status: "placed", name: "Door", track_id: 7, node_id: "5", start_ticks: "100", media_path: door };
+  record.cues.moved = { status: "placed", name: "Whoosh", track_id: 7, node_id: "6", start_ticks: "500", media_path: "C:\\P\\NOLGIA Sounds\\r1\\whoosh.wav" };
+  record.cues.renamed = { status: "placed", name: "Hit", track_id: 8, node_id: "7", start_ticks: "100", media_path: "C:\\P\\NOLGIA Sounds\\r1\\hit.wav" };
+  record.cues.gone = { status: "placed", name: "Rain", track_id: 9, node_id: "8", start_ticks: "0", media_path: "C:\\P\\NOLGIA Sounds\\r1\\rain.wav" };
+  const state = {
+    tracks: [
+      { id: 7, name: "NOLGIA SFX 1", clips: [
+        // After reopening, node id "5" belongs to the editor's clip elsewhere; the door's is now "41".
+        { start: "100", end: "200", node_id: "41", media: "C:\\P\\NOLGIA Sounds\\r1\\door.wav" },
+        { start: "600", end: "700", node_id: "6", media: "C:\\P\\NOLGIA Sounds\\r1\\whoosh.wav" },
+      ] },
+      { id: 8, name: "Hits (mine)", clips: [{ start: "100", end: "200", node_id: "7", media: "C:\\P\\NOLGIA Sounds\\r1\\hit.wav" }] },
+    ],
+  };
+  const m = sd.matchRunClips(record, state);
+  assert.deepEqual(m.clips, [{ key: "door", track_id: 7, track_name: "NOLGIA SFX 1", start: "100", media: "C:\\P\\NOLGIA Sounds\\r1\\door.wav", node_id: "41" }]);
+  assert.deepEqual(m.left.map((l) => l.key), ["moved", "renamed", "gone"]);
+  assert.match(m.left[0].reason, /not where NOLGIA placed it/);
+  assert.match(m.left[1].reason, /renamed to Hits \(mine\)/);
+  assert.match(m.left[2].reason, /no longer in the sequence/);
+});
+
+test("a place that ran out of time: its pending cues are settled by what is on the timeline", () => {
+  const record = sd.newRecord({ runId: "r1", project: "p", sequence: { id: "s", name: "Edit" }, folder: "f", bin: ["b"], now: "t0" });
+  record.tracks.push({ id: 7, name: "NOLGIA SFX 1" });
+  record.cues.a = { status: "pending", pending_at: "t0", track_id: 7, start_ticks: "100", media_path: "C:/P/a.wav" };
+  record.cues.b = { status: "pending", pending_at: "t0", track_id: 7, start_ticks: "300", media_path: "C:/P/b.wav" };
+  assert.deepEqual(sd.pendingCues(record).map((c) => c.cue_id), ["a", "b"]);
+  // Pending clips count as the run's on its track (a new sound may go next to them).
+  assert.equal(sd.isRunClip(record, 7, { start: "100", media: "c:\\p\\A.wav" }), true);
+  const got = sd.resolvePending(record, { tracks: [{ id: 7, name: "NOLGIA SFX 1", clips: [{ start: "100", end: "200", node_id: "n1", media: "C:\\P\\a.wav" }] }] }, "t1");
+  assert.deepEqual(got, { placed: 1, not_placed: 1 });
+  assert.equal(record.cues.a.status, "placed");
+  assert.equal(record.cues.a.node_id, "n1");
+  assert.equal(record.cues.b.status, "not_placed");
+  assert.deepEqual(sd.splitRepeat([{ cue_id: "a" }, { cue_id: "b" }], record).todo.map((c) => c.cue_id), ["b"]);
 });
 
 test("the preview: long side 960, the in to out range or all, at most 10 minutes", () => {

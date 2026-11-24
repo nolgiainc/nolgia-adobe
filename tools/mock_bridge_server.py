@@ -38,6 +38,8 @@ Test helpers (no auth):
   POST /mock/agent/reply {message_id?, content?, status?, error?, error_code?, question?, queued?}
                     settles (or updates) a pending reply; without message_id, the newest pending one
   POST /mock/desktop-apps {plugin_version, release_note?, status?} | {"error": status} | {} (404 again)
+  POST /mock/sound-design-package {plan_id, answers: [{status?, body?, headers?, title?, detail?}]}: what
+                    POST /sound-designs/plans/{plan_id}/package answers, one per call (the last repeats)
 
 Run:  python3 tools/mock_bridge_server.py --port 8765 --token test-token
 """
@@ -191,6 +193,8 @@ class MockState:
             self.agent_messages = {}
             self.agent_submits = []
             self.agent_creates = []
+            self.sound_design_packages = {}
+            self.sound_design_requests = []
             self.desktop_apps = dict(self.initial_desktop_apps)
             self.cond.notify_all()
 
@@ -1214,6 +1218,42 @@ def get_transcription(h, asset_id):
     return h._send(200, view)
 
 
+# ------------------------------------------------------------ sound design
+
+SOUND_DESIGN_PACKAGE_FIELDS = ("format", "source_xml", "picks", "skip", "timeline_offset_ms", "sounds_folder",
+                               "frame_rate", "name")
+
+
+@route("POST", r"/v1/sound-designs/plans/([^/]+)/package")
+def package_sound_design(h, plan_id):
+    """The answers the test set with POST /mock/sound-design-package, one per
+    call (the last one repeats): a package, or "not ready yet" (202, or 200
+    with `pending`), or an error."""
+    h.user()
+    body = strict_json(h.raw_body or b"{}", SOUND_DESIGN_PACKAGE_FIELDS,
+                       types={"format": str, "picks": dict, "skip": list})
+    st = h.state
+    with st.cond:
+        st.sound_design_requests.append({"plan_id": plan_id, "body": body})
+        answers = st.sound_design_packages.get(plan_id)
+        if not answers:
+            raise HttpError(404, "Not Found", "plan not found")
+        answer = answers.pop(0) if len(answers) > 1 else answers[0]
+    status = int(answer.get("status", 200))
+    if status >= 400:
+        raise HttpError(status, answer.get("title", "Error"), answer.get("detail", ""),
+                        headers=answer.get("headers"))
+    return h._send(status, answer.get("body"), headers=answer.get("headers"))
+
+
+@route("POST", r"/mock/sound-design-package")
+def mock_sound_design_package(h):
+    body = h.json()
+    with h.state.cond:
+        h.state.sound_design_packages[str(body["plan_id"])] = list(body["answers"])
+    return h._send(204)
+
+
 # ------------------------------------------------------------ test helpers
 
 @route("POST", r"/mock/assets")
@@ -1591,6 +1631,7 @@ def mock_state(h):
                                                                       key=lambda m: (m["created_at"], m["id"]))],
             "agent_submits": list(st.agent_submits),
             "agent_creates": list(st.agent_creates),
+            "sound_design_requests": list(st.sound_design_requests),
         }
     return h._send(200, out)
 

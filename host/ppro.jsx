@@ -628,14 +628,31 @@
     return out;
   }
 
+  // The command's project must be the open one (someone may open another
+  // while the sounds download).
+  function sameProject(args) {
+    if (!args.project) return;
+    var open = projectFsName();
+    if (!open || pathKey(open) !== pathKey(N.file(args.project).fsName)) {
+      N.fail("The open project is no longer " + args.project + ", so NOLGIA changed nothing.");
+    }
+  }
+
   // QE works on the active sequence: `fn(qeSequence)` with `seq` active, then
-  // the sequence that was active before is shown again.
+  // the sequence that was active before is shown again. Fails unless QE's
+  // sequence is `seq` (its guid, or its name where QE has no guid).
   function withActive(seq, fn) {
     app.enableQE();
     var before = activate(seq);
     try {
       var q = qe.project.getActiveSequence();
       if (!q) N.fail("Premiere Pro could not open the sequence " + seq.name + ".");
+      var guid = null;
+      try {
+        guid = q.guid;
+      } catch (e) {}
+      var same = guid !== null && guid !== undefined && String(guid) !== "" ? String(guid) === String(seq.sequenceID) : String(q.name) === String(seq.name);
+      if (!same) N.fail("Premiere Pro did not switch to the sequence " + seq.name + " (it is on " + q.name + "), so NOLGIA changed nothing there.");
       return fn(q);
     } finally {
       if (before && before.sequenceID !== seq.sequenceID) {
@@ -793,6 +810,7 @@
   };
 
   A.sd_import = function (args) {
+    sameProject(args);
     var bin = binAt(args.bin_path);
     var have = itemsByPath(bin);
     var want = [];
@@ -802,15 +820,51 @@
       if (!have[pathKey(f.fsName)]) want.push(f.fsName);
     }
     if (want.length) app.project.importFiles(want, true, bin, false);
-    have = itemsByPath(bin);
-    var missing = [];
-    for (var j = 0; j < args.paths.length; j++) {
-      if (!have[pathKey(N.file(args.paths[j]).fsName)]) missing.push(args.paths[j]);
+    // Each item's path as Premiere keeps it: NOLGIA matches them in Node
+    // (on macOS a name may come back in another Unicode form).
+    var items = [];
+    var mapping = [];
+    for (var j = 0; j < bin.children.numItems; j++) {
+      var child = bin.children[j];
+      try {
+        if (child.type === ProjectItemType.BIN) continue;
+        items.push(String(child.getMediaPath()));
+        mapping.push(oneClipAudio(child));
+      } catch (e) {}
     }
-    return { bin: args.bin_path.join(" / "), missing: missing };
+    return { bin: args.bin_path.join(" / "), items: items, mapping: mapping };
   };
 
+  // A sound goes in as ONE clip on one track: with the preference Default
+  // Audio Tracks > Stereo Media set to Mono, Premiere would make a stereo
+  // file two mono clips (two tracks). Its channel mapping is set back to one
+  // clip of the file's own channels. Answers what it found and did.
+  function oneClipAudio(item) {
+    var out = { media: String(item.getMediaPath()) };
+    try {
+      var m = item.getAudioChannelMapping;
+      if (typeof m === "function") m = item.getAudioChannelMapping();
+      if (!m) return out;
+      out.type = m.audioChannelsType;
+      out.clips = m.audioClipsNumber;
+      if (m.audioClipsNumber > 1 && (m.audioChannelsType === 0 || m.audioChannelsType === undefined)) {
+        m.audioChannelsType = m.audioClipsNumber === 2 ? 1 : 0; // 1: stereo
+        m.audioClipsNumber = 1;
+        item.setAudioChannelMapping(m);
+        var after = item.getAudioChannelMapping;
+        if (typeof after === "function") after = item.getAudioChannelMapping();
+        out.changed = true;
+        out.type_after = after ? after.audioChannelsType : null;
+        out.clips_after = after ? after.audioClipsNumber : null;
+      }
+    } catch (e) {
+      out.error = String(e);
+    }
+    return out;
+  }
+
   A.sd_add_tracks = function (args) {
+    sameProject(args);
     var seq = findSequence(args.sequence, true);
     var names = args.names || [];
     if (!names.length) return { tracks: [] };
@@ -835,6 +889,7 @@
   };
 
   A.sd_place = function (args) {
+    sameProject(args);
     var seq = findSequence(args.sequence, true);
     var items = itemsByPath(binAt(args.bin_path));
     var results = [];
@@ -842,7 +897,8 @@
       var p = args.placements[i];
       var r = { key: p.key, ok: false };
       results.push(r);
-      var item = items[pathKey(N.file(p.path).fsName)];
+      // `media` is the item's path exactly as sd_import answered it.
+      var item = items[pathKey(p.media)];
       if (!item) {
         r.reason = "its file is not in the bin.";
         continue;
@@ -853,6 +909,10 @@
         continue;
       }
       var track = found.track;
+      if (p.track_name && String(track.name) !== String(p.track_name)) {
+        r.reason = "its track is now called " + track.name + ", so it is not NOLGIA's to add to.";
+        continue;
+      }
       var there = busyAt(track, p.start, p.end);
       if (there) {
         // overwriteClip would write over it: never.
@@ -874,7 +934,10 @@
       }
       if (r.reason) continue;
       for (var c = 0; c < track.clips.numItems; c++) {
-        if (String(track.clips[c].start.ticks) === String(p.start)) clip = track.clips[c];
+        var placedNow = track.clips[c];
+        try {
+          if (String(placedNow.start.ticks) === String(p.start) && pathKey(placedNow.projectItem.getMediaPath()) === pathKey(p.media)) clip = placedNow;
+        } catch (e4) {}
       }
       if (!clip) {
         r.reason = "Premiere Pro did not put it on the timeline.";
@@ -908,36 +971,36 @@
     return { results: results };
   };
 
+  // Takes out the clips Node matched against the record (`clips`: key,
+  // track_id, track_name, start, media as sd_state answered them). Each is
+  // checked again here: on that track, the track still carrying that name,
+  // at that start, of that file; anything that does not agree on all of them
+  // is left alone and reported. Then each of the run's `tracks` ({id, name})
+  // that is empty and still carries its name is removed, after checking that
+  // QE's track at that place is the same one.
   A.sd_remove = function (args) {
+    sameProject(args);
     var seq = findSequence(args.sequence, true);
     var removed = [];
     var missing = [];
     var clips = args.clips || [];
     for (var i = 0; i < clips.length; i++) {
       var want = clips[i];
-      var clip = null;
       var found = audioTrackById(seq, want.track_id);
-      // On its own track by node id, or start and file; else moved by the
-      // person to another audio track (node ids are unique).
-      if (found) {
+      var clip = null;
+      var why = "its track is no longer in the sequence";
+      if (found && String(found.track.name) !== String(want.track_name)) why = "its track is now called " + found.track.name;
+      else if (found) {
+        why = "it is not where NOLGIA placed it";
         for (var c = 0; c < found.track.clips.numItems && !clip; c++) {
           var x = found.track.clips[c];
-          if (want.node_id && String(x.nodeId) === String(want.node_id)) clip = x;
-        }
-        for (var c2 = 0; c2 < found.track.clips.numItems && !clip; c2++) {
-          var y = found.track.clips[c2];
           try {
-            if (String(y.start.ticks) === String(want.start) && pathKey(y.projectItem.getMediaPath()) === pathKey(want.media)) clip = y;
+            if (String(x.start.ticks) === String(want.start) && String(x.projectItem.getMediaPath()) === String(want.media)) clip = x;
           } catch (e) {}
         }
       }
-      for (var t = 0; t < seq.audioTracks.numTracks && !clip && want.node_id; t++) {
-        for (var c3 = 0; c3 < seq.audioTracks[t].clips.numItems && !clip; c3++) {
-          if (String(seq.audioTracks[t].clips[c3].nodeId) === String(want.node_id)) clip = seq.audioTracks[t].clips[c3];
-        }
-      }
       if (!clip) {
-        missing.push(want.key);
+        missing.push({ key: want.key, reason: why });
         continue;
       }
       clip.remove(false, false);
@@ -945,30 +1008,57 @@
     }
     var tracksRemoved = [];
     var tracksKept = [];
-    var ids = args.track_ids || [];
+    var tracks = args.tracks || [];
+    var order = [];
+    for (var j = 0; j < tracks.length; j++) {
+      var f = audioTrackById(seq, tracks[j].id);
+      if (!f) continue;
+      if (String(f.track.name) !== String(tracks[j].name)) {
+        tracksKept.push({ id: f.track.id, name: f.track.name, reason: "it was renamed (it was " + tracks[j].name + "), so it is the editor's now and stays." });
+        continue;
+      }
+      order.push({ id: tracks[j].id, name: tracks[j].name });
+    }
+    if (!order.length) return { removed: removed, missing: missing, tracks_removed: tracksRemoved, tracks_kept: tracksKept };
     withActive(seq, function (q) {
       // From the last track up, so the indices of the others hold.
-      var order = [];
-      for (var j = 0; j < ids.length; j++) {
-        var f = audioTrackById(seq, ids[j]);
-        if (f) order.push({ id: ids[j], index: f.index });
-      }
+      for (var k = 0; k < order.length; k++) order[k].index = audioTrackById(seq, order[k].id).index;
       order.sort(function (a, b) {
         return b.index - a.index;
       });
-      for (var k = 0; k < order.length; k++) {
-        var now = audioTrackById(seq, order[k].id);
+      for (var m = 0; m < order.length; m++) {
+        var now = audioTrackById(seq, order[m].id);
         if (!now) continue;
         var n = now.track.clips.numItems;
         if (n) {
           tracksKept.push({ id: now.track.id, name: now.track.name, reason: "it has " + n + " clip" + (n === 1 ? "" : "s") + " NOLGIA did not place, so it stays." });
           continue;
         }
+        // QE's track at that place must be this one: same name, nothing on it.
+        var qt = null;
+        try {
+          qt = q.getAudioTrackAt(now.index);
+        } catch (e2) {}
+        var qName = null;
+        var qBusy = 0;
+        try {
+          qName = String(qt.name);
+          for (var it = 0; it < qt.numItems; it++) {
+            var qi = qt.getItemAt(it);
+            if (qi && String(qi.type) !== "Empty") qBusy++;
+          }
+        } catch (e3) {
+          qName = null;
+        }
+        if (qName !== String(order[m].name) || qBusy) {
+          tracksKept.push({ id: now.track.id, name: now.track.name, reason: "Premiere Pro's track list did not match (" + qName + "), so NOLGIA did not remove it; it is empty and can be deleted by hand." });
+          continue;
+        }
         var before = seq.audioTracks.numTracks;
         try {
           q.removeAudioTrack(now.index);
-        } catch (e) {}
-        if (seq.audioTracks.numTracks === before - 1 && !audioTrackById(seq, order[k].id)) tracksRemoved.push(order[k].id);
+        } catch (e4) {}
+        if (seq.audioTracks.numTracks === before - 1 && !audioTrackById(seq, order[m].id)) tracksRemoved.push(order[m].id);
         else tracksKept.push({ id: now.track.id, name: now.track.name, reason: "Premiere Pro did not remove it; it is empty and can be deleted by hand." });
       }
     });
