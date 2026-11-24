@@ -33,7 +33,15 @@ NOLGIA's; the mock answers test tones this script writes as local paths
    - the stereo tone's project item set to two mono clips (what the Default
      Audio Tracks preference "Stereo Media: Mono" does at import; checked
      with a sequence made from it), then placed again: one clip on one track,
-     both channels at the right level.
+     both channels at the right level;
+   - the editor trims one of the run's clips at its end and slips another:
+     remove takes out the rest and LEAVES those two, naming them;
+   - a place made to fail right after Premiere added its tracks (test mode
+     only) leaves no NOLGIA track: the sequence's tracks are as before;
+   - a manifest shaped as NOLGIA's (an effect and an ambience on lane 1):
+     ambience and effects go on their own tracks;
+   - an override's start_ms is the planned video's time: with the preview's
+     timeline_offset_ms it lands on the right frame.
 5. Saves and quits Premiere Pro through the plugin, and prints the numbers
    (also as JSON with --report).
 
@@ -61,6 +69,9 @@ TICKS = 254016000000
 TB = 10594584000  # 23.976
 INSTANCE = "nolgia-e2e-sound-design"
 PLAN = "e2e0b1d4-0b1d-4c55-9a3e-2b7c9d0e1f23"
+PLAN_FAIL = "e2e0b1d4-1a11-4c55-9a3e-2b7c9d0e1f23"
+PLAN_ROLES = "e2e0b1d4-2b22-4c55-9a3e-2b7c9d0e1f23"
+PLAN_OFFSET = "e2e0b1d4-3c33-4c55-9a3e-2b7c9d0e1f23"
 BARS = os.path.join(HERE, "fixtures", "sound-proof-bars-23976.mp4")
 TONE_AMP = 0.25  # RMS -15.05 dBFS, peak -12.04 dBFS
 SOURCE_RMS = 20 * math.log10(TONE_AMP / math.sqrt(2))
@@ -214,6 +225,34 @@ app.project.openSequence(mine.sequenceID);
 result = { before: before, set: String(set), after: { type: a.audioChannelsType, clips: a.audioClipsNumber }, check_tracks_with_clips: tracksWithClips };
 """
 
+# The editor's own edits on two of the run's clips: one trimmed at its end
+# (`cut` ticks shorter), one slipped (its source moved by `shift` ticks, the
+# same start and end). Answers each clip before and after.
+EDIT_RUN_CLIPS = r"""
+var seq = null;
+for (var i = 0; i < app.project.sequences.numSequences; i++) if (String(app.project.sequences[i].sequenceID) === %(id)s) seq = app.project.sequences[i];
+function clipAt(name, ticks) {
+  for (var t = 0; t < seq.audioTracks.numTracks; t++) {
+    var tr = seq.audioTracks[t];
+    if (String(tr.name) !== name) continue;
+    for (var c = 0; c < tr.clips.numItems; c++) if (String(tr.clips[c].start.ticks) === ticks) return tr.clips[c];
+  }
+  return null;
+}
+function brief(c) { return c ? { start: String(c.start.ticks), end: String(c.end.ticks), "in": String(c.inPoint.ticks), out: String(c.outPoint.ticks) } : null; }
+function at(ticks) { var x = new Time(); x.ticks = String(ticks); return x; }
+var out = { trim_before: brief(clipAt(%(track)s, %(trim)s)), slip_before: brief(clipAt(%(track)s, %(slip)s)) };
+var trim = clipAt(%(track)s, %(trim)s);
+trim.end = at(Number(trim.end.ticks) - %(cut)d);
+var slip = clipAt(%(track)s, %(slip)s);
+slip.outPoint = at(Number(slip.outPoint.ticks) + %(shift)d);
+slip = clipAt(%(track)s, %(slip)s);
+slip.inPoint = at(Number(slip.inPoint.ticks) + %(shift)d);
+out.trim_after = brief(clipAt(%(track)s, %(trim)s));
+out.slip_after = brief(clipAt(%(track)s, %(slip)s));
+result = out;
+"""
+
 # Where each tone goes (ms) and what the exported mix must measure there.
 CUES = [
     # cue_id, source, start, in, out, gain, fade in, fade out, role, lane
@@ -231,6 +270,10 @@ CUES = [
 
 def frame_s(ms):
     return round(ms * TICKS / 1000 / TB) * TB / TICKS
+
+
+def frame_of(ms):
+    return round(ms * TICKS / 1000 / TB)
 
 
 def main():
@@ -538,6 +581,132 @@ def run_proof(caller, checks, win, work, wwork, numbers, start_and_connect, proc
         assert ok, m
     checks.check("premiere", "a stereo sound split into two mono clips at import still goes in as one stereo clip",
                  stereo_stays_one_clip)
+
+    def track_names():
+        r = caller.ok("sound_design", {"action": "read", "sequence": state["seq"]}, timeout=60)
+        return [(t["name"], len(t["clips"])) for t in r["audio_tracks"]], r
+
+    def trimmed_and_slipped_stay():
+        # t0 (frame 12) and t12 (5500 ms) are on NOLGIA SFX 1 after the place above.
+        edit = caller.ok("run", {"code": EDIT_RUN_CLIPS % {
+            "id": json.dumps(state["seq"]), "track": json.dumps("NOLGIA SFX 1"),
+            "trim": json.dumps(str(frame_of(500) * TB)), "slip": json.dumps(str(frame_of(5500) * TB)),
+            "cut": 24 * TB, "shift": 12 * TB}}, timeout=60)["value"]
+        numbers["editor_trim_and_slip"] = edit
+        tb, ta, sb, sa = edit["trim_before"], edit["trim_after"], edit["slip_before"], edit["slip_after"]
+        assert tb and ta and sb and sa, edit
+        assert ta["start"] == tb["start"] and int(ta["end"]) == int(tb["end"]) - 24 * TB, edit
+        assert (sa["start"], sa["end"]) == (sb["start"], sb["end"]) and int(sa["in"]) == int(sb["in"]) + 12 * TB, edit
+        r = caller.ok("sound_design", {"action": "remove", "run_id": PLAN}, timeout=300)
+        numbers["remove_after_trim_and_slip"] = r
+        left = {c["cue_id"]: c for c in r["left"]}
+        assert sorted(left) == ["t0", "t12"], r["left"]
+        for c in left.values():
+            assert c["name"] and "trimmed or slipped" in c["reason"] and "left in the sequence" in c["reason"], c
+        assert r["removed"] == len(CUES) - 2, r
+        assert sorted(r["tracks_removed"]) == ["NOLGIA Ambience", "NOLGIA SFX 2"], r
+        assert [t["name"] for t in r["tracks_kept"]] == ["NOLGIA SFX 1"], r
+        names, _ = track_names()
+        numbers["tracks_after_trim_and_slip"] = names
+        assert names[3:] == [("NOLGIA SFX 1", 2)], names
+    checks.check("premiere", "remove leaves a clip trimmed at its end and one slipped, and names them",
+                 trimmed_and_slipped_stay)
+
+    def local_file(cue_id, name, role, lane, start_ms, out_ms, src="stereo"):
+        # The fields of NOLGIA's manifest (sounds the plan picked); `path`
+        # instead of the signed `url`, in test mode.
+        p = os.path.join(media, "tone %s.wav" % src)
+        return {"cue_id": cue_id, "name": name, "file": "NOLGIA Sounds/%s %s.wav" % (cue_id, name),
+                "path": win.to_win(p), "bytes": os.path.getsize(p), "sample_rate": 48000,
+                "channels": 2 if src == "stereo" else 1, "duration_ms": out_ms, "start_ms": start_ms,
+                "source_in_ms": 0, "source_out_ms": out_ms, "gain_db": -10 if role == "ambience" else 0,
+                "fade_in_ms": 1000 if role == "ambience" else 0, "fade_out_ms": 1000 if role == "ambience" else 80,
+                "role": role, "lane": lane, "sound_id": "freesound:" + cue_id, "licence": "cc0", "credit": ""}
+
+    def package_for(plan, files):
+        body = {"plan_id": plan, "mode": "manifest", "format": "manifest", "sounds_folder": "NOLGIA Sounds",
+                "files": files, "credits": [], "warnings": []}
+        with server.state.cond:
+            server.state.sound_design_packages[plan] = [{"status": 200, "body": body}]
+
+    def failed_place_leaves_no_track():
+        before, _ = track_names()
+        package_for(PLAN_FAIL, [local_file("f1", "Door", "sfx", 1, 1000, 1000),
+                                local_file("f2", "Room tone", "ambience", 1, 3000, 3000)])
+        cmd = caller.command("sound_design", {"action": "place", "plan_id": PLAN_FAIL, "sequence": state["seq"],
+                                              "test_fail_after_tracks": True}, timeout=600)
+        numbers["failed_place"] = {"status": cmd["status"], "error": cmd.get("error")}
+        assert cmd["status"] == "failed", cmd
+        err = cmd.get("error") or ""
+        assert "The test asked this place to fail after its tracks were added" in err, err
+        assert "took out the 2 empty tracks" in err and "No NOLGIA track was left in the sequence." in err, err
+        assert "backed up at" in err, err
+        after, _ = track_names()
+        numbers["tracks_after_failed_place"] = after
+        assert after == before, (before, after)
+        folder = os.path.join(work, "project", "NOLGIA Sounds", PLAN_FAIL)
+        record = json.load(open(os.path.join(folder, "placement.json"), encoding="utf-8"))
+        numbers["failed_place_record_tracks"] = record["tracks"]
+        assert record["tracks"] and all(t.get("removed_at") and not t.get("pending_at") for t in record["tracks"]), record["tracks"]
+    checks.check("premiere", "a place made to fail after its tracks were added leaves no NOLGIA track",
+                 failed_place_leaves_no_track)
+
+    def roles_on_their_own_tracks():
+        before, _ = track_names()
+        package_for(PLAN_ROLES, [
+            local_file("e01", "Door", "sfx", 1, 1000, 1000),
+            local_file("s01", "Room tone", "ambience", 1, 2500, 4000),  # lane 1 again: the door ended
+            local_file("e02", "Steps", "sfx", 2, 3000, 2000),  # under the room tone
+            local_file("e03", "Cup", "sfx", 1, 7000, 500),  # after the room tone, lane 1
+        ])
+        r = caller.ok("sound_design", {"action": "place", "plan_id": PLAN_ROLES, "sequence": state["seq"]}, timeout=600)
+        numbers["roles_place"] = {"placed": r["placed"], "tracks": r["tracks"],
+                                  "cues": [(c["cue_id"], c.get("track")) for c in r["cues"]]}
+        assert r["placed"] == 4, r["cues"]
+        track = {c["cue_id"]: c["track"] for c in r["cues"]}
+        assert track["e01"] == track["e03"] != track["e02"], track
+        assert track["s01"].startswith("NOLGIA Ambience") and not track["e01"].startswith("NOLGIA Ambience"), track
+        assert all(track[k].startswith("NOLGIA SFX") for k in ("e01", "e02", "e03")), track
+        after, view = track_names()
+        numbers["tracks_after_roles"] = after
+        assert after[:len(before)] == before and len(after) == len(before) + 3, (before, after)
+        new = {t["name"]: t["clips"] for t in view["audio_tracks"][len(before):]}
+        assert len(new[track["s01"]]) == 1 and len(new[track["e01"]]) == 2 and len(new[track["e02"]]) == 1, new
+    checks.check("premiere", "ambience and effects sharing a lane (a manifest shaped as NOLGIA's) go on their own tracks",
+                 roles_on_their_own_tracks)
+
+    def override_on_the_planned_clock():
+        # The preview started at the in point (1001 ms on the timeline): the
+        # manifest's start_ms is already on the timeline (NOLGIA added the
+        # offset); the override's is the planned video's, the plugin adds it.
+        offset = 1001
+        package_for(PLAN_OFFSET, [local_file("o1", "Knock", "sfx", 1, 9000, 1000),
+                                  local_file("o2", "Bell", "sfx", 1, 6000, 1000)])
+        with server.state.cond:
+            asked = len(server.state.sound_design_requests)
+        r = caller.ok("sound_design", {"action": "place", "plan_id": PLAN_OFFSET, "sequence": state["seq"],
+                                       "timeline_offset_ms": offset, "overrides": {"o1": {"start_ms": 2000}}},
+                      timeout=600)
+        with server.state.cond:
+            sent = server.state.sound_design_requests[asked:]
+        cues = {c["cue_id"]: c for c in r["cues"]}
+        numbers["offset_place"] = {"cues": r["cues"], "timeline_offset_ms": r.get("timeline_offset_ms"),
+                                   "package_request": sent}
+        assert sent and sent[-1]["body"].get("timeline_offset_ms") == offset, sent
+        assert r["placed"] == 2 and r.get("timeline_offset_ms") == offset, r
+        one = 1000 * TB / TICKS
+        assert abs(cues["o1"]["start_ms"] - 2000) <= one and abs(cues["o1"]["timeline_start_ms"] - 3001) <= one, cues["o1"]
+        assert abs(cues["o2"]["timeline_start_ms"] - 6000) <= one, cues["o2"]
+        _, view = track_names()
+        frames = {}
+        for t in view["audio_tracks"]:
+            if t["name"] == cues["o1"]["track"]:
+                frames = sorted(c["start_frame"] for c in t["clips"])
+        numbers["offset_frames"] = frames
+        # 2000 + 1001 ms is frame 72 at 23.976 (without the offset: 48); 6000 ms is frame 144.
+        assert frames == [frame_of(2000 + offset), frame_of(6000)] == [72, 144], frames
+    checks.check("premiere", "an override's start_ms on the planned video's clock lands on the right frame with the offset",
+                 override_on_the_planned_clock)
 
 
 if __name__ == "__main__":

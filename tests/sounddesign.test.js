@@ -179,13 +179,23 @@ test("the package's files: each checked on its own, the overrides applied, unkno
       good,
       "nonsense",
       Object.assign({}, good, { cue_id: "c9", role: "laser", lane: 0, gain_db: "loud", source_out_ms: undefined, duration_ms: 2500 }),
+      // Only the allowed hosts, on their own port.
+      Object.assign({}, good, { cue_id: "h1", url: "https://evil.example/a.wav" }),
+      Object.assign({}, good, { cue_id: "h2", url: "https://cdn.example:8443/a.wav" }),
+      // No number past what a sound can be.
+      Object.assign({}, good, { cue_id: "n1", start_ms: 1e300 }),
+      Object.assign({}, good, { cue_id: "n2", gain_db: 1e300 }),
+      Object.assign({}, good, { cue_id: "n3", fade_out_ms: 1e300 }),
+      Object.assign({}, good, { cue_id: "n4", source_out_ms: 1e300 }),
     ],
-    { c1: { start_ms: 5000, gain_db: -12, lane: 3 }, zz: { lane: 2 } }
+    { c1: { start_ms: 5000, gain_db: -12, lane: 3 }, zz: { lane: 2 } },
+    { offsetMs: 1001, hosts: ["cdn.example"] }
   );
   const byId = Object.fromEntries(cues.map((f) => [f.cue_id + ":" + f.index, f]));
   assert.equal(byId["c1:0"].problem, null);
   assert.deepEqual(byId["c1:0"].safe, { stem: "Door slam", ext: ".wav" });
-  assert.deepEqual([byId["c1:0"].start_ms, byId["c1:0"].gain_db, byId["c1:0"].lane], [5000, -12, 3], "overridden");
+  // The override's start is the planned video's time: the preview's offset is added.
+  assert.deepEqual([byId["c1:0"].start_ms, byId["c1:0"].gain_db, byId["c1:0"].lane], [6001, -12, 3], "overridden");
   assert.match(byId["c2:1"].problem, /not HTTPS/);
   assert.match(byId["c3:2"].problem, /user name or password/);
   assert.match(byId["c4:3"].problem, /start_ms/);
@@ -201,10 +211,36 @@ test("the package's files: each checked on its own, the overrides applied, unkno
   assert.equal(c9.lane, 1);
   assert.equal(c9.gain_db, 0);
   assert.equal(c9.source_out_ms, 2500, "the sound's length when source_out_ms is missing");
+  assert.match(byId["h1:11"].problem, /not on a host NOLGIA downloads sounds from \(evil\.example\)/);
+  assert.match(byId["h2:12"].problem, /not on a host NOLGIA downloads sounds from \(cdn\.example:8443\)/);
+  assert.match(byId["n1:13"].problem, /start_ms is more than 24 hours/);
+  assert.match(byId["n2:14"].problem, /gain_db \(1e\+300\) is not a level/);
+  assert.match(byId["n3:15"].problem, /fade_out_ms is more than 10 minutes/);
+  assert.match(byId["n4:16"].problem, /source_out_ms is more than 24 hours/);
   assert.deepEqual(unknown, ["zz"]);
   assert.deepEqual(sd.creditLines([" Rain by someone (CC BY 4.0) ", "", 7, "Door by another (CC BY 4.0)"]), ["Rain by someone (CC BY 4.0)", "Door by another (CC BY 4.0)"]);
   assert.throws(() => sd.packageCues(new Array(301).fill({}), null), /more than 300 sounds/);
   assert.throws(() => sd.packageCues(undefined, null), /no list of sounds/);
+});
+
+test("download hosts: production's storage by default, a setting otherwise; a port only when named", () => {
+  assert.deepEqual(sd.downloadHosts(undefined), ["storage.googleapis.com"]);
+  assert.deepEqual(sd.downloadHosts(" Storage.example , localhost:8443,"), ["storage.example", "localhost:8443"]);
+  const signed = "https://storage.googleapis.com/nolgia-assets/sound-library/wav/x.wav?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Signature=ab";
+  assert.equal(sd.linkProblem(signed), null);
+  assert.match(sd.linkProblem("https://storage.googleapis.com:444/x.wav"), /not on a host/);
+  assert.match(sd.linkProblem("https://storage.googleapis.com.evil.example/x.wav"), /not on a host/);
+  assert.match(sd.linkProblem("https://u@storage.googleapis.com/x.wav"), /user name or password/);
+  assert.match(sd.linkProblem("http://storage.googleapis.com/x.wav"), /not HTTPS/);
+  assert.equal(sd.linkProblem("https://localhost:8443/x.wav", ["localhost:8443"]), null);
+  assert.match(sd.linkProblem("https://localhost:9443/x.wav", ["localhost:8443"]), /not on a host/);
+  assert.match(sd.linkProblem("https://localhost/x.wav", ["localhost:8443"]), /not on a host/);
+});
+
+test("a cue starts inside the sequence, plus a few seconds' margin", () => {
+  assert.equal(sd.startProblem({ start_ms: 16000 }, 16000), null);
+  assert.equal(sd.startProblem({ start_ms: 16000 + sd.START_MARGIN_MS }, 16000), null);
+  assert.match(sd.startProblem({ start_ms: 22000 }, 16000), /would start at 22 s in the sequence, after the sequence ends \(16 s\)/);
 });
 
 test("media paths compare in one Unicode form, either slash, any case", () => {
@@ -275,12 +311,42 @@ test("lanes become new tracks; overlapping sounds get another track", () => {
   assert.deepEqual(plan.assign, { c1: "new:0", c2: "new:1", c3: "new:0", c6: "new:0", c4: "new:2", c5: "new:3" });
 });
 
-test("track names never repeat one the sequence has, and a lane names its track after most of its sounds", () => {
+test("track names never repeat one the sequence has, and each role has its own tracks", () => {
   const plan = sd.planTracks(
     [cue("c1", 1, "ambience", 0, 10), cue("c2", 1, "ambience", 5, 20), cue("c3", 2, "sfx", 0, 10), cue("c4", 2, "voice", 20, 30), cue("c5", 2, "voice", 40, 50)],
     { trackNames: ["NOLGIA SFX 1", "nolgia ambience 1", "Audio 1"] }
   );
-  assert.deepEqual(plan.tracks.map((t) => t.name), ["NOLGIA Ambience 2", "NOLGIA Ambience 3", "NOLGIA Voice"]);
+  assert.deepEqual(plan.tracks.map((t) => [t.name, t.role, t.lane]), [
+    ["NOLGIA SFX 2", "sfx", 2], ["NOLGIA Ambience 2", "ambience", 1], ["NOLGIA Ambience 3", "ambience", 1], ["NOLGIA Voice", "voice", 2],
+  ]);
+  assert.deepEqual(plan.assign, { c3: "new:0", c1: "new:1", c2: "new:2", c4: "new:3", c5: "new:3" });
+});
+
+// Lanes as nolgia-api numbers them (interchange.AssignLanes: the first lane
+// free at the cue's start, whatever its role), in the shape its manifest
+// answers: an effect and an ambience share lane 1 when they do not overlap.
+test("a manifest shaped as production's: ambience and effects never share a track", () => {
+  const signed = (name) => "https://storage.googleapis.com/nolgia-assets/sound-library/wav/" + name + ".wav?X-Goog-Signature=1";
+  const file = (cue_id, name, role, lane, start_ms, out) => ({
+    cue_id, name, file: "NOLGIA Sounds/" + cue_id + " " + name + ".wav", url: signed(cue_id), bytes: 96044, sample_rate: 48000, channels: 2,
+    duration_ms: out, start_ms, source_in_ms: 0, source_out_ms: out, gain_db: role === "ambience" ? -10 : 0,
+    fade_in_ms: role === "ambience" ? 1000 : 0, fade_out_ms: role === "ambience" ? 1000 : 80, role, lane,
+    sound_id: "freesound:" + cue_id, licence: "cc0", credit: "",
+  });
+  const { cues } = sd.packageCues([
+    file("e01", "Door", "sfx", 1, 0, 1000),
+    file("s01", "Room tone", "ambience", 1, 2000, 10000), // lane 1 again: the door ended
+    file("e02", "Steps gravel", "sfx", 2, 3000, 3000), // under the room tone
+    file("e03", "Cup", "sfx", 1, 13000, 500), // after the room tone, lane 1
+  ], null);
+  assert.ok(cues.every((c) => c.problem === null), JSON.stringify(cues.map((c) => c.problem)));
+  const framed = cues.map((c) => Object.assign(c, sd.cueFrames(c, TB["23.976"])));
+  const plan = sd.planTracks(framed, { trackNames: ["Audio 1", "Audio 2"] });
+  const trackOf = (id) => plan.tracks.find((t) => t.key === plan.assign[id]);
+  assert.equal(trackOf("s01").name, "NOLGIA Ambience");
+  for (const id of ["e01", "e02", "e03"]) assert.match(trackOf(id).name, /^NOLGIA SFX \d$/, id);
+  assert.equal(trackOf("e01"), trackOf("e03"), "effects of one lane share their track");
+  assert.deepEqual(plan.tracks.map((t) => t.name), ["NOLGIA SFX 1", "NOLGIA SFX 2", "NOLGIA Ambience"]);
 });
 
 test("a repeated place uses the run's own tracks where they are free, and adds one where they are not", () => {
@@ -309,23 +375,29 @@ test("the run's live tracks: what is on them now; tracks gone, removed or holdin
   record.tracks.push({ id: 9, name: "NOLGIA SFX 2", lane: 1, role: "sfx", removed_at: "t" });
   record.tracks.push({ id: 10, name: "NOLGIA SFX 3", lane: 1, role: "sfx" });
   record.tracks.push({ id: 11, name: "NOLGIA SFX 4", lane: 1, role: "sfx", released_at: "t" });
-  record.cues.c1 = { status: "placed", track_id: 7, node_id: "n5", start_ticks: "0", media_path: "C:\\P\\NOLGIA Sounds\\r1\\door.wav" };
+  record.tracks.push({ id: 12, name: "NOLGIA SFX 5", lane: 2, role: "sfx" });
+  record.tracks.push({ id: null, name: "NOLGIA SFX 6", lane: 3, role: "sfx", pending_at: "t", after: 9 });
+  record.cues.c1 = { status: "placed", track_id: 7, node_id: "n5", start_ticks: "0", end_ticks: "254270016001", in_ticks: "0", media_path: "C:\\P\\NOLGIA Sounds\\r1\\door.wav" };
+  record.cues.c2 = { status: "placed", track_id: 12, node_id: "n6", start_ticks: "0", end_ticks: "500", in_ticks: "0", media_path: "C:\\P\\NOLGIA Sounds\\r1\\hit.wav" };
   const live = sd.liveRunTracks(
     record,
     {
       tracks: [
-        // The run's clip is known by its file and start (the node id changed on reopening).
-        { id: 7, name: "SFX renamed", clips: [{ start: "0", end: "254270016001", node_id: "n99", media: "c:/p/nolgia sounds/r1/DOOR.wav" }] },
+        // The run's clip is known by its file, start, end and in point (the node id changed on reopening).
+        { id: 7, name: "SFX renamed", clips: [{ start: "0", end: "254270016001", in: "0", node_id: "n99", media: "c:/p/nolgia sounds/r1/DOOR.wav" }] },
         { id: 9, name: "x", clips: [] },
         // Same node id as the run's clip, but the editor's file: not the run's.
-        { id: 10, name: "NOLGIA SFX 3", clips: [{ start: "0", end: "10", node_id: "n5", media: "C:/media/mine.wav" }] },
+        { id: 10, name: "NOLGIA SFX 3", clips: [{ start: "0", end: "10", in: "0", node_id: "n5", media: "C:/media/mine.wav" }] },
         { id: 11, name: "NOLGIA SFX 4", clips: [] },
+        // The run's clip, trimmed at its end by the editor: the editor's now, so the track is too.
+        { id: 12, name: "NOLGIA SFX 5", clips: [{ start: "0", end: "400", in: "0", node_id: "n6", media: "C:/P/NOLGIA Sounds/r1/hit.wav" }] },
       ],
     },
     TB["23.976"]
   );
   assert.deepEqual(live, [{ id: 7, name: "SFX renamed", lane: 1, role: "sfx", busy: [[0, 25]] }]);
-  assert.deepEqual(sd.activeTracks(record).map((x) => x.id), [7, 8, 10]);
+  assert.deepEqual(sd.activeTracks(record).map((x) => x.id), [7, 8, 10, 12], "not a track still waiting for Premiere's answer");
+  assert.deepEqual(sd.pendingTracks(record).map((x) => x.name), ["NOLGIA SFX 6"]);
 });
 
 test("the record: repeat places nothing twice; remove marks what went out, so the run can go in again", () => {
@@ -354,46 +426,81 @@ test("the record: repeat places nothing twice; remove marks what went out, so th
   assert.equal(record.history[0].action, "remove");
 });
 
-test("remove matches a clip on the run's own track by name, start and file, never by node id alone", () => {
+test("remove matches a clip on the run's own track by name, start, end, in point and file, never by node id alone", () => {
   const record = sd.newRecord({ runId: "r1", project: "p", sequence: { id: "s", name: "Edit" }, folder: "f", bin: ["b"], now: "t0" });
   record.tracks.push({ id: 7, name: "NOLGIA SFX 1" }, { id: 8, name: "NOLGIA SFX 2" }, { id: 9, name: "NOLGIA Ambience" });
-  const door = "C:\\P\\NOLGIA Sounds\\r1\\door.wav";
-  record.cues.door = { status: "placed", name: "Door", track_id: 7, node_id: "5", start_ticks: "100", media_path: door };
-  record.cues.moved = { status: "placed", name: "Whoosh", track_id: 7, node_id: "6", start_ticks: "500", media_path: "C:\\P\\NOLGIA Sounds\\r1\\whoosh.wav" };
-  record.cues.renamed = { status: "placed", name: "Hit", track_id: 8, node_id: "7", start_ticks: "100", media_path: "C:\\P\\NOLGIA Sounds\\r1\\hit.wav" };
-  record.cues.gone = { status: "placed", name: "Rain", track_id: 9, node_id: "8", start_ticks: "0", media_path: "C:\\P\\NOLGIA Sounds\\r1\\rain.wav" };
+  const media = (name) => "C:\\P\\NOLGIA Sounds\\r1\\" + name + ".wav";
+  const placed = (name, track, start, end, inTicks = "0") => ({ status: "placed", name, track_id: track, node_id: "x", start_ticks: start, end_ticks: end, in_ticks: inTicks, media_path: media(name.toLowerCase()) });
+  record.cues.door = placed("Door", 7, "100", "200");
+  record.cues.moved = placed("Whoosh", 7, "500", "600");
+  record.cues.renamed = placed("Hit", 8, "100", "200");
+  record.cues.gone = placed("Rain", 9, "0", "900");
+  record.cues.trimmed = placed("Bell", 7, "1000", "1200"); // the editor trims its end to 1100
+  record.cues.slipped = placed("Cup", 7, "2000", "2100", "50"); // the editor slips its media to 80
+  record.cues.headcut = placed("Knock", 7, "3000", "3200"); // the editor trims its start to 3050
   const state = {
     tracks: [
       { id: 7, name: "NOLGIA SFX 1", clips: [
         // After reopening, node id "5" belongs to the editor's clip elsewhere; the door's is now "41".
-        { start: "100", end: "200", node_id: "41", media: "C:\\P\\NOLGIA Sounds\\r1\\door.wav" },
-        { start: "600", end: "700", node_id: "6", media: "C:\\P\\NOLGIA Sounds\\r1\\whoosh.wav" },
+        { start: "100", end: "200", in: "0", node_id: "41", media: media("door") },
+        { start: "600", end: "700", in: "0", node_id: "6", media: media("whoosh") },
+        { start: "1000", end: "1100", in: "0", node_id: "9", media: media("bell") },
+        { start: "2000", end: "2100", in: "80", node_id: "10", media: media("cup") },
+        { start: "3050", end: "3200", in: "50", node_id: "11", media: media("knock") },
       ] },
-      { id: 8, name: "Hits (mine)", clips: [{ start: "100", end: "200", node_id: "7", media: "C:\\P\\NOLGIA Sounds\\r1\\hit.wav" }] },
+      { id: 8, name: "Hits (mine)", clips: [{ start: "100", end: "200", in: "0", node_id: "7", media: media("hit") }] },
     ],
   };
   const m = sd.matchRunClips(record, state);
-  assert.deepEqual(m.clips, [{ key: "door", track_id: 7, track_name: "NOLGIA SFX 1", start: "100", media: "C:\\P\\NOLGIA Sounds\\r1\\door.wav", node_id: "41" }]);
-  assert.deepEqual(m.left.map((l) => l.key), ["moved", "renamed", "gone"]);
-  assert.match(m.left[0].reason, /not where NOLGIA placed it/);
-  assert.match(m.left[1].reason, /renamed to Hits \(mine\)/);
-  assert.match(m.left[2].reason, /no longer in the sequence/);
+  assert.deepEqual(m.clips, [{ key: "door", track_id: 7, track_name: "NOLGIA SFX 1", start: "100", end: "200", in: "0", media: media("door"), node_id: "41" }]);
+  const why = Object.fromEntries(m.left.map((l) => [l.key, l.reason]));
+  assert.deepEqual(m.left.map((l) => l.name), ["Whoosh", "Hit", "Rain", "Bell", "Cup", "Knock"], "each left one reported by its name");
+  assert.match(why.moved, /not where NOLGIA placed it/);
+  assert.match(why.renamed, /renamed to Hits \(mine\)/);
+  assert.match(why.gone, /no longer in the sequence/);
+  assert.match(why.trimmed, /trimmed or slipped .* editor's now/);
+  assert.match(why.slipped, /trimmed or slipped .* editor's now/);
+  assert.match(why.headcut, /trimmed or slipped .* editor's now/);
 });
 
 test("a place that ran out of time: its pending cues are settled by what is on the timeline", () => {
   const record = sd.newRecord({ runId: "r1", project: "p", sequence: { id: "s", name: "Edit" }, folder: "f", bin: ["b"], now: "t0" });
   record.tracks.push({ id: 7, name: "NOLGIA SFX 1" });
-  record.cues.a = { status: "pending", pending_at: "t0", track_id: 7, start_ticks: "100", media_path: "C:/P/a.wav" };
-  record.cues.b = { status: "pending", pending_at: "t0", track_id: 7, start_ticks: "300", media_path: "C:/P/b.wav" };
-  assert.deepEqual(sd.pendingCues(record).map((c) => c.cue_id), ["a", "b"]);
+  const tpf = 10594584000n;
+  const pending = (start, end, file) => ({ status: "pending", pending_at: "t0", track_id: 7, start_ticks: String(BigInt(start) * tpf), end_ticks: String(BigInt(end) * tpf), in_ticks: "0", media_path: "C:/P/" + file });
+  record.cues.a = pending(10, 20, "a.wav");
+  record.cues.b = pending(30, 40, "b.wav");
+  record.cues.c = pending(50, 60, "c.wav");
+  assert.deepEqual(sd.pendingCues(record).map((c) => c.cue_id), ["a", "b", "c"]);
   // Pending clips count as the run's on its track (a new sound may go next to them).
-  assert.equal(sd.isRunClip(record, 7, { start: "100", media: "c:\\p\\A.wav" }), true);
-  const got = sd.resolvePending(record, { tracks: [{ id: 7, name: "NOLGIA SFX 1", clips: [{ start: "100", end: "200", node_id: "n1", media: "C:\\P\\a.wav" }] }] }, "t1");
-  assert.deepEqual(got, { placed: 1, not_placed: 1 });
+  assert.equal(sd.isRunClip(record, 7, { start: String(10n * tpf), end: String(20n * tpf), in: "0", media: "c:\\p\\A.wav" }), true);
+  const got = sd.resolvePending(record, { tracks: [{ id: 7, name: "NOLGIA SFX 1", clips: [
+    { start: String(10n * tpf), end: String(20n * tpf + 3n), in: "0", node_id: "n1", media: "C:\\P\\a.wav" }, // Premiere's rounding: still the cue
+    { start: String(50n * tpf), end: String(55n * tpf), in: "0", node_id: "n3", media: "C:\\P\\c.wav" }, // trimmed since: the editor's
+  ] }] }, "t1", TB["23.976"]);
+  assert.deepEqual(got, { placed: 1, not_placed: 1, left: 1 });
   assert.equal(record.cues.a.status, "placed");
   assert.equal(record.cues.a.node_id, "n1");
+  assert.equal(record.cues.a.end_ticks, String(20n * tpf + 3n), "the clip as Premiere has it");
   assert.equal(record.cues.b.status, "not_placed");
+  assert.equal(record.cues.c.status, "left");
   assert.deepEqual(sd.splitRepeat([{ cue_id: "a" }, { cue_id: "b" }], record).todo.map((c) => c.cue_id), ["b"]);
+});
+
+test("tracks a place asked for but never heard back about are found by name after the tracks the sequence had", () => {
+  const record = sd.newRecord({ runId: "r1", project: "p", sequence: { id: "s", name: "Edit" }, folder: "f", bin: ["b"], now: "t0" });
+  record.tracks.push({ id: 7, name: "NOLGIA SFX 1", lane: 1, role: "sfx" });
+  record.tracks.push({ id: null, name: "NOLGIA SFX 2", lane: 2, role: "sfx", pending_at: "t0", after: 4 });
+  record.tracks.push({ id: null, name: "NOLGIA Ambience", lane: 1, role: "ambience", pending_at: "t0", after: 4 });
+  const got = sd.resolvePendingTracks(record, { named: [
+    { id: 3, index: 2, name: "NOLGIA Ambience", clips: [] }, // the editor's own track of that name, before NOLGIA's
+    { id: 7, index: 4, name: "NOLGIA SFX 1", clips: [] },
+    { id: 12, index: 5, name: "NOLGIA SFX 2", clips: [] },
+  ] }, "t1");
+  assert.deepEqual(got, { added: ["NOLGIA SFX 2"], none: ["NOLGIA Ambience"] });
+  assert.deepEqual(sd.activeTracks(record).map((t) => [t.id, t.name]), [[7, "NOLGIA SFX 1"], [12, "NOLGIA SFX 2"]]);
+  assert.equal(record.tracks[2].removed_at, "t1");
+  assert.deepEqual(sd.pendingTracks(record), []);
 });
 
 test("the preview: long side 960, the in to out range or all, at most 10 minutes", () => {

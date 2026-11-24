@@ -7,8 +7,9 @@
 //
 // Nothing the editor made is changed: the sounds go on NEW audio tracks
 // after all others, never on a track with clips on it. Premiere's scripting
-// has no undo group, so before anything changes the project is saved in
-// place and copied into NOLGIA backups next to it, and `remove` takes out
+// has no undo group (a place is many undo steps in Premiere, not one), so
+// before anything changes the project file as last saved is copied into
+// NOLGIA backups next to it, then saved in place, and `remove` takes out
 // exactly the clips and tracks a run added (its record, placement.json,
 // sits beside the sounds in NOLGIA Sounds/<run> next to the project).
 
@@ -212,7 +213,8 @@ function premiereReserve(cueCount) {
 }
 
 // The project must still be the one the command started with: someone may
-// open another while the sounds download.
+// open another while the sounds download. Resolves Premiere's project_file
+// answer ({path, dirty}).
 async function sameProject(ctl, command, projectFile) {
   const now = await ctl.hostOrFail("project_file", {}, command);
   if (!now.path || work.pathKey(now.path) !== work.pathKey(projectFile)) {
@@ -221,80 +223,102 @@ async function sameProject(ctl, command, projectFile) {
         "), so it changed nothing. Open " + path.basename(projectFile) + " again and ask once more."
     );
   }
+  return now;
 }
 
-// Save in place, then a byte copy into NOLGIA backups next to the project:
+// Before NOLGIA changes the project: FIRST a byte copy of the project file
+// as the person last saved it into NOLGIA backups next to it (no save has
+// touched it yet), THEN a save in place (Premiere checks it is still this
+// project), so the person's unsaved work is on disk before NOLGIA's change;
+// when there was unsaved work (or Premiere cannot say), that is copied too,
 // the project exactly as it was before NOLGIA's change. Throws (and nothing
-// changes) when either fails, or when another project is open now.
+// changes) when the first copy or the save fails, or another project is
+// open now; the error names the backup. Resolves the backups, the one
+// exactly before NOLGIA's change last.
 async function saveAndBackUp(ctl, command, projectFile, label) {
-  await sameProject(ctl, command, projectFile);
+  const now = await sameProject(ctl, command, projectFile);
+  const backups = [];
   try {
-    await ctl.hostOrFail("save", {}, command);
-  } catch (err) {
-    throw new CommandError("NOLGIA could not save the project before changing it (" + err.message + "), so it changed nothing.");
-  }
-  try {
-    const backup = work.backupProject(projectFile, ctl.documentsDir(), ctl.clock(), label);
-    ctl.log("Backed up " + path.basename(projectFile) + " before " + label + ": " + backup + ".");
-    return backup;
+    backups.push(work.backupProject(projectFile, ctl.documentsDir(), ctl.clock(), label));
   } catch (err) {
     throw new CommandError("NOLGIA could not back up the project (" + err.message + "), so it changed nothing.");
   }
+  try {
+    await ctl.hostOrFail("save", { project: projectFile }, command);
+  } catch (err) {
+    throw new CommandError(
+      "NOLGIA could not save the project before changing it (" + err.message + "), so it changed nothing. " +
+        "The project as you last saved it is backed up at " + backups[0] + "."
+    );
+  }
+  if (now.dirty !== false) {
+    try {
+      backups.push(work.backupProject(projectFile, ctl.documentsDir(), ctl.clock(), label + ", with unsaved changes"));
+    } catch (err) {
+      ctl.log("The backup with the unsaved changes of " + path.basename(projectFile) + " was not made (" + err.message + ").");
+    }
+  }
+  ctl.log("Backed up " + path.basename(projectFile) + " before " + label + ": " + backups.join(", ") + ".");
+  return backups;
+}
+
+// The package route works on the plan's sounds for up to 100 s before it
+// answers (nolgia-api soundDesignPackagePrepare); past that it answers 503
+// with the code sound_design_package_preparing and Retry-After: 30, keeping
+// what it made, and the same request asked again finishes. So every request
+// is given at least that wait plus a margin, and all of them fit in one
+// limit: the command's time less what placing needs afterwards.
+const PACKAGE_SERVER_WAIT = 100;
+const PACKAGE_MARGIN = 15;
+const PACKAGE_REQUEST_MIN = PACKAGE_SERVER_WAIT + PACKAGE_MARGIN;
+const PACKAGE_REQUEST_MAX = 290;
+const STILL_PREPARING = "NOLGIA is still preparing the sounds. Try again in a minute; nothing was placed.";
+
+// How long the next request may take with `left` seconds of the limit:
+// null when that is less than the route's own wait plus the margin (it
+// would fail as "could not be reached" while NOLGIA is still working).
+function packageRequestTimeout(left) {
+  if (!(left >= PACKAGE_REQUEST_MIN)) return null;
+  return Math.min(left, PACKAGE_REQUEST_MAX);
+}
+
+function stillPreparing(err) {
+  return err instanceof ApiError && err.status === 503 && (err.code === "sound_design_package_preparing" || err.retryAfter !== null);
 }
 
 // The plan's package (format manifest), asked with the plugin's own
-// sign-in. While NOLGIA is still making some sounds (202, or `pending`
-// cues) it asks again, within the command's time. Resolves {pkg, waiting:
-// cue ids still being made}.
+// sign-in: 200 is the package; 503 sound_design_package_preparing is asked
+// again after its Retry-After, within the limit. Resolves the package.
 async function fetchPackage(api, a, command) {
   const body = { format: "manifest" };
   if (a.timeline_offset_ms !== undefined) body.timeline_offset_ms = a.timeline_offset_ms;
   if (a.picks) body.picks = a.picks;
   if (a.skip) body.skip = a.skip;
-  let last = null;
-  let waiting = [];
+  const left = () => command.remaining() - premiereReserve(0);
   let asked = 0;
   for (;;) {
-    const budget = command.remaining() - premiereReserve(0) - 30;
-    if (budget < 10) break;
+    const timeout = packageRequestTimeout(left());
+    if (timeout === null) break;
     asked += 1;
     let res;
     try {
-      res = await api.packageSoundDesign(a.plan_id, body, { timeout: Math.min(290, budget) });
+      res = await api.packageSoundDesign(a.plan_id, body, { timeout });
     } catch (err) {
-      if (err instanceof ApiError && err.status === 503 && err.retryAfter !== null && command.remaining() - err.retryAfter > premiereReserve(0) + 40) {
-        await util.sleep(Math.max(200, Math.min(30, err.retryAfter) * 1000));
-        continue;
-      }
-      throw new CommandError(packageProblem(err, a.plan_id));
+      if (!stillPreparing(err)) throw new CommandError(packageProblem(err, a.plan_id));
+      const wait = Math.max(0.2, Math.min(30, err.retryAfter !== null ? err.retryAfter : 30));
+      if (packageRequestTimeout(left() - wait) === null) break;
+      await util.sleep(wait * 1000);
+      continue;
     }
-    const pkg = res.body && typeof res.body === "object" ? res.body : {};
-    const pending = Array.isArray(pkg.pending) ? pkg.pending.filter((x) => typeof x === "string") : [];
-    const notReady = res.status === 202 || pending.length > 0 || pkg.complete === false || pkg.ready === false;
-    if (Array.isArray(pkg.files)) last = pkg;
-    waiting = pending;
-    if (!notReady) return { pkg, waiting: [] };
-    let wait = res.retryAfter !== null ? res.retryAfter : finiteOr(pkg.retry_after_ms, 5000) / 1000;
-    wait = Math.max(0.2, Math.min(30, wait));
-    if (command.remaining() - wait - premiereReserve(0) - 40 < 10) break;
-    await util.sleep(wait * 1000);
+    return res.body && typeof res.body === "object" && !Array.isArray(res.body) ? res.body : {};
   }
-  if (!last && !asked) {
+  if (!asked) {
     throw new CommandError(
       "The command's time (" + Math.round(command.timeout) + " s) is too short to fetch the plan's sounds and place them, so nothing " +
-        "was changed. Send it again with timeout_seconds 600."
+        "was changed. Send it again with timeout_seconds 900."
     );
   }
-  if (!last) {
-    throw new CommandError(
-      "NOLGIA was still making this plan's sounds when the command's time ran out, so nothing was placed. Place the run again in a minute."
-    );
-  }
-  return { pkg: last, waiting };
-}
-
-function finiteOr(value, fallback) {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+  throw new CommandError(STILL_PREPARING);
 }
 
 function packageProblem(err, planId) {
@@ -307,29 +331,85 @@ function packageProblem(err, planId) {
   return "NOLGIA could not hand over the plan's sounds (" + err.status + (said ? ": " + said : "") + "), so nothing was changed.";
 }
 
+// sd_state's arguments for a run: its tracks by id, and the tracks it is
+// still waiting to hear about by name.
+function stateArgs(sequence, record) {
+  return {
+    sequence,
+    track_ids: sd.activeTracks(record).map((t) => t.id),
+    track_names: sd.pendingTracks(record).map((t) => t.name),
+  };
+}
+
+// sd_state's tracks with the ones found by name added (once their id is known).
+function allTracks(state) {
+  const tracks = ((state && state.tracks) || []).slice();
+  const ids = new Set(tracks.map((t) => String(t.id)));
+  for (const t of (state && state.named) || []) if (!ids.has(String(t.id))) tracks.push(t);
+  return Object.assign({}, state, { tracks });
+}
+
+// Settles a run's pending tracks and cues against what Premiere has now.
+function settle(record, state, now) {
+  const tracks = sd.resolvePendingTracks(record, state, now);
+  const cues = sd.resolvePending(record, allTracks(state), now, state && state.sequence ? state.sequence.timebase : null);
+  return { tracks, cues };
+}
+
+// After sd_add_tracks failed or answered too late: which of the tracks NOLGIA
+// asked for are in the sequence now, as far as Premiere can say in the time
+// left. Resolves {added: [names], none: [names]} or {unknown: [names]}.
+async function tracksLeft(ctl, command, record, sequence) {
+  const names = sd.pendingTracks(record).map((t) => t.name);
+  if (!names.length) return { added: [], none: [] };
+  try {
+    const now = await ctl.hostOrFail("sd_state", { sequence, track_ids: [], track_names: names }, command);
+    return sd.resolvePendingTracks(record, now, isoTime(ctl.clock()));
+  } catch (err) {
+    return { unknown: names };
+  }
+}
+
+function tracksLeftText(left, runId) {
+  if (left.unknown) {
+    return "NOLGIA could not check which of its new tracks (" + left.unknown.join(", ") + ") Premiere Pro added; it wrote them down, " +
+      "and action remove with run_id " + runId + " takes out any of them that are in the sequence.";
+  }
+  if (left.added.length) {
+    return "These empty NOLGIA tracks are in the sequence: " + left.added.join(", ") + "; action remove with run_id " + runId + " takes them out.";
+  }
+  return "No NOLGIA track was left in the sequence.";
+}
+
 async function place(ctl, command, api) {
   const a = command.args;
   const localOk = ctl.env.NOLGIA_SOUND_DESIGN_LOCAL === "1";
+  const hosts = sd.downloadHosts(ctl.env.NOLGIA_SOUND_DOWNLOAD_HOSTS);
+  // The planned video's time to the sequence's: what the agent sends and
+  // is told is in the planned video's time.
+  const offset = a.timeline_offset_ms || 0;
   const pf = await ctl.hostOrFail("project_file", {}, command);
   if (!pf.path) throw new CommandError(UNSAVED);
   const paths = runPaths(pf.path, a.run_id);
   let record = readRecord(paths.record, a.run_id);
-  const first = await ctl.hostOrFail("sd_state", { sequence: a.sequence, track_ids: sd.activeTracks(record).map((t) => t.id) }, command);
+  const first = await ctl.hostOrFail("sd_state", stateArgs(a.sequence, record), command);
   const seq = first.sequence;
-  if (record && String(record.sequence.id) !== String(seq.id) && (sd.placedCues(record).length || sd.pendingCues(record).length)) {
+  const busy = (r) => sd.placedCues(r).length || sd.pendingCues(r).length || sd.pendingTracks(r).length;
+  if (record && String(record.sequence.id) !== String(seq.id) && busy(record)) {
     throw new CommandError(
       "Run " + a.run_id + " is placed on the sequence " + record.sequence.name + ", not " + seq.name +
         ". Take it out there first (action remove), or place the sounds with a new run_id."
     );
   }
-  // A place that ran out of time before: what it left on the timeline is the run's.
-  if (record && sd.pendingCues(record).length) {
-    sd.resolvePending(record, first, isoTime(ctl.clock()));
+  // A place that ran out of time before: the tracks and clips it left in the
+  // sequence are the run's.
+  if (record && (sd.pendingCues(record).length || sd.pendingTracks(record).length)) {
+    settle(record, first, isoTime(ctl.clock()));
     writeJson(paths.record, record);
   }
 
-  const { pkg, waiting } = await fetchPackage(api, a, command);
-  const { cues, unknown } = sd.packageCues(pkg.files, a.overrides);
+  const pkg = await fetchPackage(api, a, command);
+  const { cues, unknown } = sd.packageCues(pkg.files, a.overrides, { offsetMs: offset, hosts });
   const warnings = (Array.isArray(pkg.warnings) ? pkg.warnings.filter((w) => typeof w === "string") : []).slice(0, 50);
   for (const id of unknown) warnings.push("The override for " + id + " was not used: the plan has no cue " + id + ".");
   const report = {};
@@ -338,11 +418,10 @@ async function place(ctl, command, api) {
     if (!report[cue.cue_id]) order.push(cue.cue_id);
     report[cue.cue_id] = Object.assign({ cue_id: cue.cue_id, name: cue.name || cue.cue_id, status }, reason ? { reason } : {}, extra);
   };
-  for (const id of waiting) {
-    if (!cues.some((c) => c.cue_id === id)) say({ cue_id: id }, "not_placed", "Not placed: NOLGIA is still making this sound. Place the run again in a minute to add it.");
-  }
 
-  // What can be placed: checked, on the frame grid, not placed by this run before.
+  // What can be placed: checked, inside the sequence, on the frame grid, not
+  // placed by this run before.
+  const sequenceEndMs = sd.ticksToMs(seq.end);
   const ready = [];
   for (const cue of cues) {
     if (report[cue.cue_id]) continue; // listed twice
@@ -358,6 +437,11 @@ async function place(ctl, command, api) {
       say(cue, "not_placed", "Not placed: its path is not a full path.");
       continue;
     }
+    const outside = sd.startProblem(cue, sequenceEndMs);
+    if (outside) {
+      say(cue, "not_placed", outside);
+      continue;
+    }
     const frames = sd.cueFrames(cue, seq.timebase);
     if (frames.reason) {
       say(cue, "not_placed", frames.reason);
@@ -368,13 +452,15 @@ async function place(ctl, command, api) {
   const split = sd.splitRepeat(ready, record);
   for (const cue of split.already) {
     const was = record.cues[cue.cue_id];
-    say(cue, "already_placed", "This run placed it before (" + was.track_name + " at " + sd.ticksToMs(was.start_ticks) + " ms); it is not placed twice.");
+    const at = sd.ticksToMs(was.start_ticks) - (was.timeline_offset_ms !== undefined ? was.timeline_offset_ms : offset);
+    say(cue, "already_placed", "This run placed it before (" + was.track_name + " at " + at + " ms of the planned video); it is not placed twice.");
   }
   const result = {
     run_id: a.run_id,
     plan_id: a.plan_id,
     sequence: seq.name,
     sequence_id: seq.id,
+    timeline_offset_ms: offset,
     folder: paths.folder,
     repeated: Boolean(record),
   };
@@ -383,16 +469,17 @@ async function place(ctl, command, api) {
 
   // The sounds, into NOLGIA Sounds/<run> next to the project.
   fs.mkdirSync(paths.folder, { recursive: true });
-  const fetched = await fetchSounds(ctl, api, split.todo, paths.folder, record, localOk, say, command);
+  const fetched = await fetchSounds(ctl, api, split.todo, paths.folder, record, { localOk, hosts }, say, command);
   const todo = split.todo.filter((c) => fetched.has(c.cue_id));
   if (!todo.length) return finishReport(result, order, report, record, null);
 
-  // Saved and backed up before anything in the project changes; what is on
+  // Backed up and saved before anything in the project changes; what is on
   // the tracks is read again after that (the downloads can take minutes).
   const now = ctl.clock();
-  const backup = await saveAndBackUp(ctl, command, pf.path, "sound design " + a.run_id);
-  result.backup = backup;
-  const state = await ctl.hostOrFail("sd_state", { sequence: seq.id, track_ids: sd.activeTracks(record).map((t) => t.id) }, command);
+  const backups = await saveAndBackUp(ctl, command, pf.path, "sound design " + a.run_id);
+  result.backup = backups[backups.length - 1];
+  if (backups.length > 1) result.backup_as_last_saved = backups[0];
+  const state = await ctl.hostOrFail("sd_state", stateArgs(seq.id, record), command);
   if (String(state.sequence.id) !== String(seq.id)) throw new CommandError("The sequence " + seq.name + " changed while NOLGIA worked, so it changed nothing.");
   if (!record) {
     record = sd.newRecord({
@@ -407,17 +494,13 @@ async function place(ctl, command, api) {
   record.plan_id = a.plan_id;
   record.sequence = { id: seq.id, name: seq.name };
   const project = pf.path;
+  let failure = null;
   try {
     // Into the run's own bin. Premiere answers each item's path as it keeps
     // it (on macOS perhaps in another Unicode form): matched by mediaKey.
     const wanted = Array.from(new Set(todo.map((c) => fetched.get(c.cue_id))));
     const imported = await ctl.hostOrFail("sd_import", { project, paths: wanted, bin_path: record.bin }, command);
     result.bin = imported.bin;
-    // Items Premiere had split into mono clips (Default Audio Tracks), set back to one clip.
-    const remapped = (imported.mapping || []).filter((m) => m && m.changed).map((m) => path.basename(String(m.media)));
-    if (remapped.length) result.audio_mapping_fixed = remapped;
-    const unmapped = (imported.mapping || []).filter((m) => m && m.error).map((m) => path.basename(String(m.media)) + ": " + m.error);
-    if (unmapped.length) result.audio_mapping_errors = unmapped;
     const inBin = new Map((imported.items || []).map((m) => [sd.mediaKey(m), m]));
     const placeable = [];
     for (const c of todo) {
@@ -428,20 +511,48 @@ async function place(ctl, command, api) {
         placeable.push(c);
       }
     }
-    // New tracks after all others, one per lane (more where sounds overlap).
+    // New tracks after all others, by role, then lane (more where sounds overlap).
     const existing = sd.liveRunTracks(record, state, seq.timebase);
     const plan = sd.planTracks(placeable, { existing, trackNames: state.track_names || [] });
     const fresh = plan.tracks.filter((t) => t.isNew);
     const ids = {};
     for (const t of plan.tracks) if (!t.isNew) ids[t.key] = t.id;
     if (fresh.length) {
-      const added = await ctl.hostOrFail("sd_add_tracks", { project, sequence: seq.id, names: fresh.map((t) => t.name) }, command);
+      // Written down BEFORE Premiere is asked, by name: if its answer comes
+      // too late (or it fails after adding some), a later place or remove
+      // still finds them.
+      const planned = fresh.map((t) => ({
+        id: null,
+        name: t.name,
+        lane: t.lane,
+        role: t.role,
+        pending_at: isoTime(ctl.clock()),
+        after: (state.track_names || []).length,
+      }));
+      record.tracks.push(...planned);
+      writeJson(paths.record, record);
+      const args = { project, sequence: seq.id, names: fresh.map((t) => t.name) };
+      if (localOk && a.test_fail_after_tracks) args.fail_after_add = true;
+      let added;
+      try {
+        added = await ctl.hostOrFail("sd_add_tracks", args, command);
+      } catch (err) {
+        const left = await tracksLeft(ctl, command, record, seq.id);
+        throw new CommandError("Premiere Pro did not add the new audio tracks (" + err.message.replace(/\.$/, "") + "). " + tracksLeftText(left, a.run_id));
+      }
+      const got = (added && added.tracks) || [];
       fresh.forEach((t, i) => {
-        const got = added.tracks[i];
-        ids[t.key] = got.id;
-        record.tracks.push({ id: got.id, name: got.name, lane: t.lane, role: t.role, added_at: isoTime(now) });
+        if (!got[i]) return;
+        Object.assign(planned[i], { id: got[i].id, name: got[i].name, added_at: isoTime(now) });
+        delete planned[i].pending_at;
+        delete planned[i].after;
+        ids[t.key] = got[i].id;
       });
       writeJson(paths.record, record); // a failure from here on can still be taken out
+      if (got.length !== fresh.length) {
+        const left = await tracksLeft(ctl, command, record, seq.id);
+        throw new CommandError("Premiere Pro added " + got.length + " of the " + fresh.length + " new audio tracks. " + tracksLeftText(left, a.run_id));
+      }
     }
     const names = {};
     for (const t of record.tracks) names[String(t.id)] = t.name;
@@ -465,6 +576,7 @@ async function place(ctl, command, api) {
         media_path: fetched.get(c.cue_id),
         track_id: trackId,
         track_name: names[String(trackId)] || "",
+        timeline_offset_ms: offset,
       });
       return {
         key: c.cue_id,
@@ -486,11 +598,17 @@ async function place(ctl, command, api) {
         placed = await ctl.hostOrFail("sd_place", { project, sequence: seq.id, bin_path: record.bin, placements }, command);
       } catch (err) {
         throw new CommandError(
-          "Premiere Pro did not finish placing the sounds in time (" + err.message + "). NOLGIA wrote down what it was " +
+          "Premiere Pro did not finish placing the sounds in time (" + err.message.replace(/\.$/, "") + "). NOLGIA wrote down what it was " +
             "placing: place the run again to finish, or remove it to take out whatever went in."
         );
       }
     }
+    // Items Premiere had split into mono clips (Default Audio Tracks), set back to one clip.
+    const mapping = placed.mapping || [];
+    const remapped = mapping.filter((m) => m && m.changed).map((m) => path.basename(String(m.media)));
+    if (remapped.length) result.audio_mapping_fixed = remapped;
+    const unmapped = mapping.filter((m) => m && m.error).map((m) => path.basename(String(m.media)) + ": " + m.error);
+    if (unmapped.length) result.audio_mapping_errors = unmapped;
     const byKey = new Map(placed.results.map((r) => [r.key, r]));
     for (const c of placeable) {
       const r = byKey.get(c.cue_id);
@@ -516,10 +634,12 @@ async function place(ctl, command, api) {
       if (r.note) notes.push(r.note);
       if (c.level.clamped) notes.push("gain held to " + c.level.db + " dB (Premiere's clip Level goes from " + sd.MIN_GAIN_DB + " to +" + sd.MAX_GAIN_DB + " dB)");
       if (c.fades.shortened) notes.push("the fades were longer than the sound, so they meet in the middle");
+      const startMs = sd.ticksToMs(rec.start_ticks);
       say(c, "placed", null, {
         track: rec.track_name,
-        start_ms: sd.ticksToMs(rec.start_ticks),
-        end_ms: sd.ticksToMs(rec.end_ticks),
+        start_ms: startMs - offset,
+        end_ms: sd.ticksToMs(rec.end_ticks) - offset,
+        timeline_start_ms: startMs,
         gain_db: c.level.db,
         fade_in_ms: c.fades.fade_in_ms,
         fade_out_ms: c.fades.fade_out_ms,
@@ -527,24 +647,35 @@ async function place(ctl, command, api) {
       });
       if (notes.length) report[c.cue_id].note = notes.join("; ") + ".";
     }
-  } finally {
-    record.credits = mergeCredits(record.credits, sd.creditLines(pkg.credits), record.cues);
-    record.updated_at = isoTime(ctl.clock());
-    sd.noteHistory(record, {
-      at: record.updated_at,
-      action: "place",
-      placed: Object.values(report).filter((r) => r.status === "placed").length,
-      not_placed: Object.values(report).filter((r) => r.status === "not_placed").length,
-    });
-    writeJson(paths.record, record);
-    writeCredits(paths.credits, record.credits);
-    try {
-      await sameProject(ctl, command, pf.path);
-      const saved = await ctl.hostOrFail("save", {}, command);
-      result.saved = { path: saved.path || pf.path, at: isoTime(ctl.clock()) };
-    } catch (err) {
-      result.save_note = "NOLGIA placed the sounds but did not save the project (" + err.message + "): save it with File > Save.";
-    }
+  } catch (err) {
+    failure = err;
+  }
+  record.credits = mergeCredits(record.credits, sd.creditLines(pkg.credits), record.cues);
+  record.updated_at = isoTime(ctl.clock());
+  sd.noteHistory(record, {
+    at: record.updated_at,
+    action: "place",
+    placed: Object.values(report).filter((r) => r.status === "placed").length,
+    not_placed: Object.values(report).filter((r) => r.status === "not_placed").length,
+    failed: failure ? String(failure.message || failure).slice(0, 300) : undefined,
+  });
+  writeJson(paths.record, record);
+  writeCredits(paths.credits, record.credits);
+  let notSaved = null;
+  try {
+    await sameProject(ctl, command, pf.path);
+    const saved = await ctl.hostOrFail("save", { project }, command);
+    result.saved = { path: saved.path || pf.path, at: isoTime(ctl.clock()) };
+  } catch (err) {
+    notSaved = err.message.replace(/\.$/, "");
+    result.save_note = "NOLGIA placed the sounds but did not save the project (" + notSaved + "): save it with File > Save.";
+  }
+  if (failure) {
+    const said = String(failure.message || failure).replace(/\.?\s*$/, ".");
+    const saved = notSaved === null
+      ? "NOLGIA saved the project as it is now (action remove with run_id " + a.run_id + " takes out whatever this run put in)."
+      : "The project was not saved after this (" + notSaved + ").";
+    throw new CommandError(said + " " + saved + " The project as it was before NOLGIA's change is backed up at " + result.backup + ".");
   }
   return finishReport(result, order, report, record, paths.record);
 }
@@ -581,12 +712,14 @@ function hostOf(url) {
 }
 
 // Download (or, in tests, copy) each cue's sound into `folder`. The links
-// are only those NOLGIA's package answered: HTTPS, redirects only within
-// the link's own site, a time limit per file, a failure reported by its
-// status code alone. The same link is fetched once; a file this run already
+// are only those NOLGIA's package answered, on the allowed storage hosts
+// (`hosts`): HTTPS, never with NOLGIA's sign-in (no Authorization header),
+// redirects only within the link's own host and port and never to a link
+// with a user name, a time limit per file, a failure reported by its status
+// code alone. The same link is fetched once; a file this run already
 // fetched is used again. Resolves Map(cue_id -> file path); cues that fail
 // are reported.
-async function fetchSounds(ctl, api, cues, folder, record, localOk, say, command) {
+async function fetchSounds(ctl, api, cues, folder, record, { localOk, hosts }, say, command) {
   const out = new Map();
   const bySource = new Map();
   const taken = new Set();
@@ -633,6 +766,7 @@ async function fetchSounds(ctl, api, cues, folder, record, localOk, say, command
           maxBytes: sd.MAX_FILE_BYTES,
           httpsOnly: true,
           sameHost: true,
+          checkLink: (url) => sd.linkProblem(url, hosts),
           quiet: true,
           limitSeconds: Math.max(5, Math.min(300, command.remaining() - reserve)),
         });
@@ -733,16 +867,21 @@ async function remove(ctl, command) {
   if (a.sequence && a.sequence !== record.sequence.name && a.sequence !== String(record.sequence.id)) {
     throw new CommandError("Run " + a.run_id + " was placed on the sequence " + record.sequence.name + ", not " + a.sequence + ".");
   }
-  const tracks = sd.activeTracks(record);
   const result = { run_id: a.run_id, sequence: record.sequence.name, folder: paths.folder, bin: record.bin.join(" / ") };
-  if (!sd.placedCues(record).length && !sd.pendingCues(record).length && !tracks.length) {
+  if (!sd.placedCues(record).length && !sd.pendingCues(record).length && !sd.activeTracks(record).length && !sd.pendingTracks(record).length) {
     return Object.assign(result, { removed: 0, left: [], tracks_removed: [], tracks_kept: [], note: "This run is already out of the sequence." });
   }
-  result.backup = await saveAndBackUp(ctl, command, pf.path, "removing sound design " + a.run_id);
-  // What is on the run's tracks now; a clip is the run's only when its
-  // track, its start and its file all agree with the record.
-  const state = await ctl.hostOrFail("sd_state", { sequence: record.sequence.id, track_ids: tracks.map((t) => t.id) }, command);
-  sd.resolvePending(record, state, isoTime(ctl.clock()));
+  const backups = await saveAndBackUp(ctl, command, pf.path, "removing sound design " + a.run_id);
+  result.backup = backups[backups.length - 1];
+  if (backups.length > 1) result.backup_as_last_saved = backups[0];
+  // What is on the run's tracks now (tracks a place asked for but never
+  // heard back about are looked up by name); a clip is the run's only when
+  // its track, start, end, in point and file all agree with the record.
+  const state = allTracks(await ctl.hostOrFail("sd_state", stateArgs(record.sequence.id, record), command));
+  const at = isoTime(ctl.clock());
+  settle(record, state, at);
+  const trimmedPending = Object.keys(record.cues).filter((k) => record.cues[k].status === "left" && record.cues[k].left_at === at);
+  const tracks = sd.activeTracks(record);
   const match = sd.matchRunClips(record, state);
   let outcome;
   try {
@@ -759,7 +898,7 @@ async function remove(ctl, command) {
   }
   try {
     await sameProject(ctl, command, pf.path);
-    const saved = await ctl.hostOrFail("save", {}, command);
+    const saved = await ctl.hostOrFail("save", { project: pf.path }, command);
     result.saved = { path: saved.path || pf.path, at: isoTime(ctl.clock()) };
   } catch (err) {
     result.save_note = "NOLGIA took the sounds out but did not save the project (" + err.message + "): save it with File > Save.";
@@ -767,9 +906,12 @@ async function remove(ctl, command) {
   const names = {};
   for (const t of record.tracks) names[String(t.id)] = t.name;
   const cueName = (key) => (record.cues[key] && record.cues[key].name) || key;
-  const left = match.left.concat(
-    (outcome.missing || []).map((m) => ({ key: typeof m === "string" ? m : m.key, name: cueName(typeof m === "string" ? m : m.key), reason: (m && m.reason) || "Premiere Pro no longer had it as NOLGIA placed it" }))
-  );
+  const left = trimmedPending
+    .map((key) => ({ key, name: cueName(key), reason: "it was trimmed or slipped since NOLGIA placed it, so it is the editor's now" }))
+    .concat(match.left)
+    .concat(
+      (outcome.missing || []).map((m) => ({ key: typeof m === "string" ? m : m.key, name: cueName(typeof m === "string" ? m : m.key), reason: (m && m.reason) || "Premiere Pro no longer had it as NOLGIA placed it" }))
+    );
   return Object.assign(result, {
     removed: (outcome.removed || []).length,
     left: left.map((l) => ({ cue_id: l.key, name: l.name, reason: l.reason + ", so it was left in the sequence." })),
@@ -781,4 +923,4 @@ async function remove(ctl, command) {
   });
 }
 
-module.exports = { soundDesign, readView, runsBeside, mergeCredits };
+module.exports = { soundDesign, readView, runsBeside, mergeCredits, packageRequestTimeout, PACKAGE_REQUEST_MIN, STILL_PREPARING };

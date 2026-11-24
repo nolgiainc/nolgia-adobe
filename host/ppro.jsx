@@ -663,11 +663,14 @@
     }
   }
 
+  // A track's clips as NOLGIA compares them: start, end, in point (a clip
+  // the editor slipped keeps its start and end), node id and file.
   function trackClipsBrief(track) {
     var list = [];
     for (var i = 0; i < track.clips.numItems; i++) {
       var c = track.clips[i];
       var e = { start: c.start.ticks, end: c.end.ticks, node_id: String(c.nodeId) };
+      e["in"] = c.inPoint.ticks;
       try {
         e.media = String(c.projectItem.getMediaPath());
       } catch (x) {}
@@ -806,9 +809,25 @@
       var found = audioTrackById(seq, ids[j]);
       if (found) tracks.push({ id: found.track.id, index: found.index + 1, name: found.track.name, clips: trackClipsBrief(found.track) });
     }
-    return { project: projectFsName(), sequence: seqFacts(seq), track_names: names, tracks: tracks };
+    // Tracks NOLGIA asked for but never heard back about, by name.
+    var named = [];
+    var wanted = args.track_names || [];
+    if (wanted.length) {
+      for (var k = 0; k < seq.audioTracks.numTracks; k++) {
+        var t = seq.audioTracks[k];
+        for (var w = 0; w < wanted.length; w++) {
+          if (String(t.name) === String(wanted[w])) {
+            named.push({ id: t.id, index: k + 1, name: String(t.name), clips: trackClipsBrief(t) });
+            break;
+          }
+        }
+      }
+    }
+    return { project: projectFsName(), sequence: seqFacts(seq), track_names: names, tracks: tracks, named: named };
   };
 
+  // Imports the run's files into its own bin. Nothing else in the bin is
+  // touched (the editor may have dropped their own items into it).
   A.sd_import = function (args) {
     sameProject(args);
     var bin = binAt(args.bin_path);
@@ -823,22 +842,22 @@
     // Each item's path as Premiere keeps it: NOLGIA matches them in Node
     // (on macOS a name may come back in another Unicode form).
     var items = [];
-    var mapping = [];
     for (var j = 0; j < bin.children.numItems; j++) {
       var child = bin.children[j];
       try {
         if (child.type === ProjectItemType.BIN) continue;
         items.push(String(child.getMediaPath()));
-        mapping.push(oneClipAudio(child));
       } catch (e) {}
     }
-    return { bin: args.bin_path.join(" / "), items: items, mapping: mapping };
+    return { bin: args.bin_path.join(" / "), items: items };
   };
 
   // A sound goes in as ONE clip on one track: with the preference Default
   // Audio Tracks > Stereo Media set to Mono, Premiere would make a stereo
   // file two mono clips (two tracks). Its channel mapping is set back to one
-  // clip of the file's own channels. Answers what it found and did.
+  // clip of the file's own channels; only for the items a place is about to
+  // put on the timeline (sd_place), never anything else in the bin. Answers
+  // what it found and did.
   function oneClipAudio(item) {
     var out = { media: String(item.getMediaPath()) };
     try {
@@ -863,6 +882,13 @@
     return out;
   }
 
+  // Adds one audio track per name after all others and names them. When
+  // anything goes wrong after Premiere added tracks (fewer than asked, one
+  // not empty, a name not taken), the EMPTY tracks this call added (those
+  // after the ones the sequence had) are taken out again, from the last,
+  // before failing; the failure says what, if anything, is left.
+  // `fail_after_add` (the end-to-end proof, test mode only) fails right
+  // after the tracks are added and named.
   A.sd_add_tracks = function (args) {
     sameProject(args);
     var seq = findSequence(args.sequence, true);
@@ -870,21 +896,69 @@
     if (!names.length) return { tracks: [] };
     return withActive(seq, function (q) {
       var count = seq.audioTracks.numTracks;
-      // 0 video tracks; names.length audio tracks of type 1 after the last one.
-      q.addTracks(0, 0, names.length, 1, count, 0, 0);
-      if (seq.audioTracks.numTracks !== count + names.length) {
-        N.fail("Premiere Pro did not add the audio tracks (it has " + seq.audioTracks.numTracks + ", NOLGIA expected " + (count + names.length) + ").");
-      }
+      var problem = null;
       var out = [];
-      for (var i = 0; i < names.length; i++) {
+      try {
+        // 0 video tracks; names.length audio tracks of type 1 after the last one.
+        q.addTracks(0, 0, names.length, 1, count, 0, 0);
+      } catch (e) {
+        problem = "Premiere Pro refused to add audio tracks (" + e + ")";
+      }
+      if (!problem && seq.audioTracks.numTracks !== count + names.length) {
+        problem = "Premiere Pro did not add the audio tracks (it has " + seq.audioTracks.numTracks + ", NOLGIA expected " + (count + names.length) + ")";
+      }
+      for (var i = 0; !problem && i < names.length; i++) {
         var t = seq.audioTracks[count + i];
-        if (t.clips.numItems) N.fail("A track Premiere Pro just added is not empty, so NOLGIA stopped.");
+        if (t.clips.numItems) {
+          problem = "A track Premiere Pro just added is not empty";
+          break;
+        }
         try {
           q.getAudioTrackAt(count + i).setName(String(names[i]));
-        } catch (e) {}
-        out.push({ id: t.id, index: count + i + 1, name: String(seq.audioTracks[count + i].name) });
+        } catch (e1) {}
+        var got = String(seq.audioTracks[count + i].name);
+        if (got !== String(names[i])) {
+          problem = "Premiere Pro did not take the name " + names[i] + " for a new track (it is " + got + ")";
+          break;
+        }
+        out.push({ id: t.id, index: count + i + 1, name: got });
       }
-      return { tracks: out };
+      if (!problem && args.fail_after_add === true) problem = "The test asked this place to fail after its tracks were added";
+      if (!problem) return { tracks: out };
+      // Take out what this call added: empty, after the tracks the sequence
+      // had, and QE's track at that place is the same one (name, nothing on it).
+      var removed = 0;
+      var left = [];
+      for (var k = seq.audioTracks.numTracks - 1; k >= count; k--) {
+        var tk = seq.audioTracks[k];
+        var name = String(tk.name);
+        var qName = null;
+        var qBusy = 0;
+        try {
+          var qt = q.getAudioTrackAt(k);
+          qName = String(qt.name);
+          for (var it = 0; it < qt.numItems; it++) {
+            var qi = qt.getItemAt(it);
+            if (qi && String(qi.type) !== "Empty") qBusy++;
+          }
+        } catch (e2) {
+          qName = null;
+        }
+        if (tk.clips.numItems || qBusy || qName !== name) {
+          left.push(name);
+          continue;
+        }
+        var before = seq.audioTracks.numTracks;
+        try {
+          q.removeAudioTrack(k);
+        } catch (e3) {}
+        if (seq.audioTracks.numTracks === before - 1) removed++;
+        else left.push(name);
+      }
+      if (left.length) {
+        N.fail(problem + "; " + left.length + " new track" + (left.length === 1 ? "" : "s") + " could not be taken out again: " + left.join(", ") + ".");
+      }
+      N.fail(problem + (removed ? "; NOLGIA took out the " + removed + " empty track" + (removed === 1 ? "" : "s") + " Premiere Pro had added." : "."));
     });
   };
 
@@ -893,6 +967,8 @@
     var seq = findSequence(args.sequence, true);
     var items = itemsByPath(binAt(args.bin_path));
     var results = [];
+    var mapping = [];
+    var mapped = {};
     for (var i = 0; i < args.placements.length; i++) {
       var p = args.placements[i];
       var r = { key: p.key, ok: false };
@@ -902,6 +978,12 @@
       if (!item) {
         r.reason = "its file is not in the bin.";
         continue;
+      }
+      // One clip per sound: only the items this run places, each once.
+      if (!mapped[pathKey(p.media)]) {
+        mapped[pathKey(p.media)] = true;
+        var m = oneClipAudio(item);
+        if (m.changed || m.error) mapping.push(m);
       }
       var found = audioTrackById(seq, p.track_id);
       if (!found) {
@@ -968,16 +1050,17 @@
         r.note = "its volume or fades could not be set (" + e3 + ")";
       }
     }
-    return { results: results };
+    return { results: results, mapping: mapping };
   };
 
   // Takes out the clips Node matched against the record (`clips`: key,
-  // track_id, track_name, start, media as sd_state answered them). Each is
-  // checked again here: on that track, the track still carrying that name,
-  // at that start, of that file; anything that does not agree on all of them
-  // is left alone and reported. Then each of the run's `tracks` ({id, name})
-  // that is empty and still carries its name is removed, after checking that
-  // QE's track at that place is the same one.
+  // track_id, track_name, start, end, in, media as sd_state answered them).
+  // Each is checked again here: on that track, the track still carrying that
+  // name, at that start, with that end and in point (a clip trimmed or
+  // slipped since is the editor's), of that file; anything that does not
+  // agree on all of them is left alone and reported. Then each of the run's
+  // `tracks` ({id, name}) that is empty and still carries its name is
+  // removed, after checking that QE's track at that place is the same one.
   A.sd_remove = function (args) {
     sameProject(args);
     var seq = findSequence(args.sequence, true);
@@ -995,7 +1078,12 @@
         for (var c = 0; c < found.track.clips.numItems && !clip; c++) {
           var x = found.track.clips[c];
           try {
-            if (String(x.start.ticks) === String(want.start) && String(x.projectItem.getMediaPath()) === String(want.media)) clip = x;
+            if (String(x.start.ticks) !== String(want.start) || String(x.projectItem.getMediaPath()) !== String(want.media)) continue;
+            if (String(x.end.ticks) !== String(want.end) || (want["in"] !== undefined && String(x.inPoint.ticks) !== String(want["in"]))) {
+              why = "it was trimmed or slipped since NOLGIA placed it, so it is the editor's now";
+              continue;
+            }
+            clip = x;
           } catch (e) {}
         }
       }
@@ -1073,6 +1161,9 @@
 
   A.save = function (args) {
     var p = project();
+    // Sound design names the project it backed up: a save in place must
+    // never go to another project opened meanwhile.
+    sameProject(args);
     if (!args.path) {
       if (!p.path || !N.file(p.path).exists) {
         N.fail("This project has never been saved, so there is no file to save to. Pass `path`, for example C:/Projects/edit.prproj.");

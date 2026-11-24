@@ -318,9 +318,10 @@ class ApiClient {
 
   // A finished sound design plan's sounds for Premiere Pro (format
   // manifest): POST /sound-designs/plans/{id}/package. Resolves {status,
-  // body, retryAfter}: 200 is the package; 202 (or a package that still
-  // lists `pending` cues) means NOLGIA is still making some sounds: ask
-  // again after `retryAfter` seconds.
+  // body, retryAfter} for the 200 package. While NOLGIA is still making
+  // some sounds (it works up to 100 s per request) the route answers 503
+  // with the code sound_design_package_preparing and Retry-After: 30,
+  // thrown as an ApiError like every other refusal: ask again after it.
   async packageSoundDesign(planId, body, { timeout = 290 } = {}) {
     const res = await this.request("POST", "/sound-designs/plans/" + encodeURIComponent(planId) + "/package", body, { timeout });
     return { status: res.status, body: res.json(), retryAfter: retryAfter(res.headers) };
@@ -358,13 +359,16 @@ class ApiClient {
     }
   }
 
-  // Download a signed URL to destPath (never with the bearer). Resolves the
-  // file's first 64 bytes. `httpsOnly` refuses a link, or a redirect, that
-  // is not HTTPS; `sameHost` refuses a redirect to another host than the
-  // link's; `limitSeconds` is the most the whole download may take (not
-  // reset by each piece that arrives); `quiet` reports a failure by its
-  // status code only, never with what the server sent.
-  async download(url, destPath, { maxBytes = null, redirects = 5, httpsOnly = false, sameHost = false, limitSeconds = null, quiet = false } = {}) {
+  // Download a signed URL to destPath (never with the bearer: no
+  // Authorization header). Resolves the file's first 64 bytes. A link, or a
+  // redirect, carrying a user name or password is refused; `httpsOnly`
+  // refuses one that is not HTTPS; `sameHost` refuses a redirect to another
+  // host or port than the link's; `checkLink(url)` answers what is wrong
+  // with a link (each hop), or null; `limitSeconds` is the most the whole
+  // download may take (not reset by each piece that arrives); `quiet`
+  // reports a failure by its status code only, never with what the server
+  // sent.
+  async download(url, destPath, { maxBytes = null, redirects = 5, httpsOnly = false, sameHost = false, checkLink = null, limitSeconds = null, quiet = false } = {}) {
     const tmp = destPath + ".part";
     let current = url;
     const firstHost = (() => {
@@ -381,8 +385,21 @@ class ApiClient {
         if (httpsOnly && !/^https:\/\//i.test(current)) {
           throw new ApiError(400, { title: "Not HTTPS", detail: "The download link is not HTTPS." });
         }
-        if (sameHost && hop > 0 && new URL(current).host.toLowerCase() !== firstHost) {
+        let link = null;
+        try {
+          link = new URL(current);
+        } catch (e) {
+          throw new ApiError(400, { title: "Not a link", detail: "The download link is not a web address." });
+        }
+        if (link.username || link.password) {
+          throw new ApiError(400, { title: "Not allowed", detail: "The download was sent to a link with a user name or password." });
+        }
+        if (sameHost && hop > 0 && link.host.toLowerCase() !== firstHost) {
           throw new ApiError(400, { title: "Redirected elsewhere", detail: "The download was sent to another site." });
+        }
+        const wrong = checkLink ? checkLink(current) : null;
+        if (wrong) {
+          throw new ApiError(400, { title: "Not allowed", detail: (hop > 0 ? "The download was sent elsewhere: " : "") + wrong + "." });
         }
         const out = fs.createWriteStream(tmp);
         let copied = 0;

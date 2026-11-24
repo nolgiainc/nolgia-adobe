@@ -25,11 +25,11 @@ the project and makes its own backup first, so the separate `prproj` safety
 copy and save are not needed here.
 
 Every `sound_design` call below goes through `nolgia_app_sound_design` with
-`action` and the fields shown. If that tool is not in your tool list, send the
-same command as a bridge command: `POST /bridge/commands` with `{"app":
-"premiere", "kind": "sound_design", "args": {...}, "timeout_seconds": 600}`,
-then `nolgia_app_command` with its id until it is finished. Give `place` and
-`preview` 600 seconds.
+`action` and the fields shown, and only through it. If that tool is not in
+your tool list, sound design is not available on this account yet: tell the
+person exactly that, in one sentence, and stop. Never send the command any
+other way. A long `preview` or `place` answers a `command_id`: follow it with
+`nolgia_app_command` until it is finished.
 
 Name the sequence in every call: `read` answers its `sequence.id`; pass that
 same id as `sequence` to `preview` and `place`, so the sounds go on the cut
@@ -59,6 +59,11 @@ that was planned even if the person opens another sequence meanwhile.
    computer and uploads it to their NOLGIA Library. Keep `asset_id` and
    `timeline_offset_ms` (where the preview starts on the timeline). A preview
    longer than 10 minutes is refused with what to do: pass that on.
+   **One clock from here on:** the plan's cue sheet, an override's
+   `start_ms` and the times in the place answer are all in the PLANNED
+   VIDEO's time (0 is the preview's first frame). Never add
+   `timeline_offset_ms` yourself: pass it once with `place` and the plugin
+   adds it.
 3. **Price, then the person's yes.** `nolgia_plan_sound_design` with the
    `asset_id` and the brief, without `confirm`: the answer is the quote. Tell
    the person the price in one line: "The plan costs 2 credits per started
@@ -79,19 +84,22 @@ that was planned even if the person opens another sequence meanwhile.
      candidates or a library search, or `{asset_id}` of a sound in their
      Library), with `gain_db`, `fade_in_ms` or `fade_out_ms` if asked;
    - `skip`: cue ids to leave out;
-   - `overrides`: cue id to `start_ms`, `gain_db`, `fade_in_ms`,
-     `fade_out_ms` or `lane` (where and how loud only).
+   - `overrides`: cue id to `start_ms` (in the planned video's time, as in
+     the cue sheet), `gain_db`, `fade_in_ms`, `fade_out_ms` or `lane` (where
+     and how loud only).
    Do not call the package or export tool for Premiere Pro: the plugin asks
    NOLGIA for the plan's sounds itself, with its own sign-in, and downloads
    only what NOLGIA hands it. The plan id is the run's id: the same plan
    placed again places nothing twice, so a retry is safe. The plugin puts the
-   sounds in a folder next to the project (`NOLGIA Sounds/<plan id>`), saves
-   the project and backs it up into `NOLGIA backups` before it changes
-   anything, imports the sounds into their own bin, and lays them on new
-   tracks after all others ("NOLGIA SFX 1", "NOLGIA Ambience" ...). An unsaved
-   project is refused: ask the person to save it (File > Save) and place
-   again. If a cue comes back "NOLGIA is still making this sound", place again
-   a minute later to add it.
+   sounds in a folder next to the project (`NOLGIA Sounds/<plan id>`), copies
+   the project as last saved into `NOLGIA backups` and saves it before it
+   changes anything, imports the sounds into their own bin, and lays them on
+   new tracks after all others, one per kind of sound ("NOLGIA SFX 1",
+   "NOLGIA Ambience" ...). An unsaved project is refused: ask the person to
+   save it (File > Save) and place again. If the answer is "NOLGIA is still
+   preparing the sounds. Try again in a minute; nothing was placed.", say
+   that and place again a minute later. If a place fails partway, its error
+   says whether the project was saved and where the backup is: pass that on.
 
 ## Check
 
@@ -111,8 +119,10 @@ Tell the person, in a few short lines:
 - how to undo: "Say: take the sound design out." (that is `sound_design`
   `{action: "remove", run_id: <the plan id>}`: it takes out exactly the clips
   and empty tracks this run added; the files and the bin stay; a sound the
-  person moved, and a NOLGIA track the person renamed or put their own clips
-  on, stay too, and the answer lists them);
+  person moved, trimmed or slipped, and a NOLGIA track the person renamed or
+  put their own clips on, stay too, and the answer lists them by name).
+  Ctrl+Z (Cmd+Z) in Premiere is not one step for this: the placing is many
+  undo steps, so say "remove" is the way to take it out;
 - the credit lines any CC BY sound requires (`credits` in the place answer,
   also written to `CREDITS.txt` in the folder): they must go with the film
   wherever it is published.

@@ -5,16 +5,25 @@
 //
 // NOLGIA watches a small preview of the sequence and writes a cue sheet. The
 // plugin asks the plan's package route itself (format `manifest`, with its
-// own sign-in): `files[]`, one per cue: a WAV `url`, a relative `file` name,
-// `start_ms` on the person's timeline, `source_in_ms` and `source_out_ms`,
-// `gain_db`, `fade_in_ms`, `fade_out_ms`, `role` and `lane`. The agent never
-// hands the plugin a link: `place` takes the plan id, the package route's own
-// choices (`picks`, `skip`) and placement-only `overrides`. This module
-// checks those, makes the names safe to write
-// on Windows and macOS, turns milliseconds into frames and Premiere's ticks,
-// plans which new audio track each sound goes on, works out the volume and
-// fade keyframes, and keeps the record of what a run placed, so a repeated
-// `place` places nothing twice and `remove` takes out exactly what it put in.
+// own sign-in): `files[]`, one per cue: a WAV `url` (a signed storage link
+// on storage.googleapis.com), a relative `file` name, `start_ms` on the
+// person's timeline (the route adds `timeline_offset_ms`), `source_in_ms` and
+// `source_out_ms`, `gain_db`, `fade_in_ms`, `fade_out_ms`, `role` and `lane`
+// (the route's lanes ignore the role: tracks are planned by role, then lane).
+// The agent never hands the plugin a link: `place` takes the plan id, the
+// package route's own choices (`picks`, `skip`) and placement-only
+// `overrides`.
+//
+// One clock for the agent: every time it sends (an override's `start_ms`) or
+// is told (a placed cue's `start_ms` and `end_ms`) is in the PLANNED VIDEO's
+// time, the cue sheet's; the plugin adds `timeline_offset_ms` (where the
+// preview starts in the sequence) itself.
+//
+// This module checks those, makes the names safe to write on Windows and
+// macOS, turns milliseconds into frames and Premiere's ticks, plans which new
+// audio track each sound goes on, works out the volume and fade keyframes,
+// and keeps the record of what a run placed, so a repeated `place` places
+// nothing twice and `remove` takes out exactly what it put in.
 //
 // The numbers behind gain and fades were measured in Premiere Pro 26.2 on
 // Windows (an exported mix of a -15.05 dBFS RMS tone): Volume > Level is
@@ -52,6 +61,16 @@ const PREVIEW_LONG_SIDE = 960;
 const PREVIEW_MBPS = 2;
 const MIN_GAIN_DB = -96;
 const MAX_GAIN_DB = 15; // Premiere's Volume > Level goes no higher
+// A package's gain outside this is not a level at all (it is refused, not held).
+const MAX_PACKAGE_GAIN_DB = 200;
+const MAX_FADE_MS = 600000;
+// A cue may start at most this long after the sequence ends (a sound placed
+// past the end is a mistake, not a tail).
+const START_MARGIN_MS = 5000;
+// Where the package's links may point: production signs its WAV links on
+// Google Cloud Storage (V4 signed URLs on storage.googleapis.com). A setting:
+// NOLGIA_SOUND_DOWNLOAD_HOSTS, comma separated, "host" or "host:port".
+const DOWNLOAD_HOSTS = ["storage.googleapis.com"];
 const MAX_TEXT = 200;
 const RECORD_VERSION = 1;
 
@@ -228,6 +247,9 @@ function validateArgs(args) {
   out.picks = picksArg(args.picks);
   out.skip = skipArg(args.skip);
   out.overrides = overridesArg(args.overrides);
+  // The end-to-end proof's way to fail a place right after its tracks are
+  // added; honoured only in test mode (NOLGIA_SOUND_DESIGN_LOCAL=1).
+  if (args.test_fail_after_tracks === true) out.test_fail_after_tracks = true;
   return out;
 }
 
@@ -299,6 +321,8 @@ function skipArg(value) {
 
 // `overrides`: cue id to where and how loud it goes (start_ms, gain_db,
 // fade_in_ms, fade_out_ms, lane). Placement only: never a link or a name.
+// `start_ms` is in the planned video's time, like the cue sheet: the plugin
+// adds timeline_offset_ms (packageCues).
 function overridesArg(value) {
   if (value === undefined || value === null) return null;
   if (!plainObject(value)) fail("`overrides` must be an object: cue id to {" + OVERRIDE_KEYS.join(", ") + "}.");
@@ -315,8 +339,8 @@ function overridesArg(value) {
     }
     if (o.start_ms !== undefined) v.start_ms = numberIn(o.start_ms, "overrides." + id + ".start_ms", 0, MAX_OFFSET_MS);
     if (o.gain_db !== undefined) v.gain_db = numberIn(o.gain_db, "overrides." + id + ".gain_db", MIN_GAIN_DB, MAX_GAIN_DB);
-    if (o.fade_in_ms !== undefined) v.fade_in_ms = numberIn(o.fade_in_ms, "overrides." + id + ".fade_in_ms", 0, 600000);
-    if (o.fade_out_ms !== undefined) v.fade_out_ms = numberIn(o.fade_out_ms, "overrides." + id + ".fade_out_ms", 0, 600000);
+    if (o.fade_in_ms !== undefined) v.fade_in_ms = numberIn(o.fade_in_ms, "overrides." + id + ".fade_in_ms", 0, MAX_FADE_MS);
+    if (o.fade_out_ms !== undefined) v.fade_out_ms = numberIn(o.fade_out_ms, "overrides." + id + ".fade_out_ms", 0, MAX_FADE_MS);
     if (o.lane !== undefined) {
       if (!Number.isInteger(o.lane) || o.lane < 1 || o.lane > 64) fail("`overrides." + id + ".lane` must be a whole number from 1 to 64.");
       v.lane = o.lane;
@@ -327,25 +351,60 @@ function overridesArg(value) {
 }
 
 // The package's `files`, checked one by one (a problem with one sound does
-// not stop the others), with the agent's overrides applied. Resolves
-// {cues, unknown: override ids the package has no cue for}.
-function packageCues(files, overrides) {
+// not stop the others), with the agent's overrides applied. The package's
+// start_ms is already on the timeline; an override's start_ms is in the
+// planned video's time, so `offsetMs` (timeline_offset_ms) is added to it.
+// `hosts` are where a link may point (downloadHosts). Resolves {cues,
+// unknown: override ids the package has no cue for}.
+function packageCues(files, overrides, { offsetMs = 0, hosts = DOWNLOAD_HOSTS } = {}) {
   if (!Array.isArray(files)) fail("NOLGIA's package for this plan has no list of sounds.");
   if (files.length > MAX_FILES) fail("The plan has more than " + MAX_FILES + " sounds; NOLGIA places at most that many in one run.");
   const seen = new Set();
   const cues = files.map((f, i) => {
-    const cue = normalizeCue(f, i);
+    const cue = normalizeCue(f, i, { hosts });
     if (seen.has(cue.cue_id)) cue.problem = cue.problem || "The cue " + cue.cue_id + " is listed twice; only the first is placed.";
     seen.add(cue.cue_id);
     const o = overrides && overrides[cue.cue_id];
     if (o && !cue.problem) {
-      for (const key of OVERRIDE_KEYS) if (o[key] !== undefined) cue[key] = o[key];
+      for (const key of OVERRIDE_KEYS) {
+        if (o[key] === undefined) continue;
+        cue[key] = key === "start_ms" ? o[key] + offsetMs : o[key];
+      }
       cue.overridden = Object.keys(o);
     }
     return cue;
   });
   const unknown = Object.keys(overrides || {}).filter((id) => !seen.has(id));
   return { cues, unknown };
+}
+
+// The hosts a package's links may point to: NOLGIA_SOUND_DOWNLOAD_HOSTS
+// (comma separated, "host" or "host:port", lower case), else production's
+// storage host. A port is allowed only when the entry names it.
+function downloadHosts(setting) {
+  const text = setting === undefined || setting === null ? "" : String(setting);
+  const list = text.split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+  return list.length ? list : DOWNLOAD_HOSTS.slice();
+}
+
+// Is `url` HTTPS on one of `hosts`, with no user name or password? Answers
+// null when it is, else what is wrong (for a person).
+function linkProblem(url, hosts = DOWNLOAD_HOSTS) {
+  let u;
+  try {
+    u = new URL(String(url));
+  } catch (e) {
+    return "its link is not a web address";
+  }
+  if (u.protocol !== "https:") return "its link is not HTTPS";
+  if (u.username || u.password) return "its link carries a user name or password";
+  const host = u.hostname.toLowerCase();
+  const ok = hosts.some((entry) => {
+    const at = entry.lastIndexOf(":");
+    const named = at > 0 && /^\d+$/.test(entry.slice(at + 1));
+    return named ? entry.slice(0, at) === host && entry.slice(at + 1) === u.port : entry === host && u.port === "";
+  });
+  return ok ? null : "its link is not on a host NOLGIA downloads sounds from (" + u.host + ")";
 }
 
 // Credit lines from the package, trimmed.
@@ -355,8 +414,10 @@ function creditLines(value) {
 }
 
 // One entry of `files`, checked. Keeps what can be read and says what is
-// wrong in `problem` (the cue is then not placed).
-function normalizeCue(f, index) {
+// wrong in `problem` (the cue is then not placed). Every number is held to a
+// range a sound can have (never 1e300): times within 24 hours, fades within
+// 10 minutes, a gain within +-200 dB (Premiere's -96 to +15 is applied later).
+function normalizeCue(f, index, { hosts = DOWNLOAD_HOSTS } = {}) {
   const cue = { index, cue_id: String(index + 1), problem: null };
   if (!f || typeof f !== "object" || Array.isArray(f)) {
     cue.problem = "Entry " + (index + 1) + " of `files` is not an object.";
@@ -372,38 +433,40 @@ function normalizeCue(f, index) {
   if (!cue.file && cue.name) cue.file = cue.name + ".wav";
   if (typeof f.url === "string" && f.url) {
     cue.url = f.url;
-    let u = null;
-    try {
-      u = new URL(f.url);
-    } catch (e) {
-      problems.push("its url is not a web address");
-    }
-    if (u && u.protocol !== "https:") problems.push("its url is not HTTPS");
-    if (u && (u.username || u.password)) problems.push("its url carries a user name or password");
+    const wrong = linkProblem(f.url, hosts);
+    if (wrong) problems.push(wrong);
   } else if (typeof f.path === "string" && f.path) {
     cue.path = f.path; // only taken in test mode (the controller checks)
   } else {
     problems.push("it has no url");
   }
-  for (const key of ["bytes", "duration_ms", "sample_rate", "channels"]) {
-    if (finite(f[key]) && f[key] >= 0) cue[key] = f[key];
-  }
+  const within = (value, hi) => finite(value) && value >= 0 && value <= hi;
+  if (within(f.bytes, Number.MAX_SAFE_INTEGER)) cue.bytes = f.bytes;
+  if (within(f.duration_ms, MAX_OFFSET_MS)) cue.duration_ms = f.duration_ms;
+  if (within(f.sample_rate, 768000)) cue.sample_rate = f.sample_rate;
+  if (within(f.channels, 64)) cue.channels = f.channels;
   if (cue.bytes !== undefined && cue.bytes > MAX_FILE_BYTES) {
     problems.push("its file is " + Math.round(cue.bytes / 1048576) + " MB, more than the " + MAX_FILE_BYTES / 1048576 + " MB NOLGIA places");
   }
   if (!finite(f.start_ms) || f.start_ms < 0) problems.push("its start_ms is missing or before the sequence starts");
+  else if (f.start_ms > MAX_OFFSET_MS) problems.push("its start_ms is more than 24 hours");
   else cue.start_ms = f.start_ms;
-  cue.source_in_ms = finite(f.source_in_ms) && f.source_in_ms >= 0 ? f.source_in_ms : 0;
-  if (finite(f.source_out_ms)) cue.source_out_ms = f.source_out_ms;
+  if (finite(f.source_in_ms) && f.source_in_ms > MAX_OFFSET_MS) problems.push("its source_in_ms is more than 24 hours");
+  cue.source_in_ms = within(f.source_in_ms, MAX_OFFSET_MS) ? f.source_in_ms : 0;
+  if (within(f.source_out_ms, MAX_OFFSET_MS)) cue.source_out_ms = f.source_out_ms;
+  else if (finite(f.source_out_ms) && f.source_out_ms > MAX_OFFSET_MS) problems.push("its source_out_ms is more than 24 hours");
   else if (cue.duration_ms !== undefined) cue.source_out_ms = cue.duration_ms;
   else problems.push("it has no source_out_ms");
   if (cue.duration_ms !== undefined && cue.source_out_ms !== undefined && cue.source_out_ms > cue.duration_ms) {
     cue.source_out_ms = cue.duration_ms;
   }
   if (cue.source_out_ms !== undefined && !(cue.source_out_ms > cue.source_in_ms)) problems.push("it ends before it starts");
-  cue.gain_db = finite(f.gain_db) ? f.gain_db : 0;
-  cue.fade_in_ms = finite(f.fade_in_ms) && f.fade_in_ms > 0 ? f.fade_in_ms : 0;
-  cue.fade_out_ms = finite(f.fade_out_ms) && f.fade_out_ms > 0 ? f.fade_out_ms : 0;
+  if (finite(f.gain_db) && Math.abs(f.gain_db) > MAX_PACKAGE_GAIN_DB) problems.push("its gain_db (" + f.gain_db + ") is not a level");
+  cue.gain_db = finite(f.gain_db) && Math.abs(f.gain_db) <= MAX_PACKAGE_GAIN_DB ? f.gain_db : 0;
+  for (const key of ["fade_in_ms", "fade_out_ms"]) {
+    if (finite(f[key]) && f[key] > MAX_FADE_MS) problems.push("its " + key + " is more than 10 minutes");
+    cue[key] = within(f[key], MAX_FADE_MS) && f[key] > 0 ? f[key] : 0;
+  }
   cue.role = ROLES.includes(f.role) ? f.role : "sfx";
   cue.lane = Number.isInteger(f.lane) && f.lane >= 1 && f.lane <= 64 ? f.lane : 1;
   cue.credit = typeof f.credit === "string" ? cut(f.credit.trim(), 500) : "";
@@ -420,6 +483,18 @@ function normalizeCue(f, index) {
 }
 
 // ------------------------------------------------------------ frames per cue
+
+// A cue must start inside the sequence (plus a few seconds' margin): a
+// sound placed far past the end is a mistake. Answers the reason, or null.
+function startProblem(cue, sequenceEndMs) {
+  const end = Number(sequenceEndMs);
+  if (!Number.isFinite(end) || cue.start_ms <= end + START_MARGIN_MS) return null;
+  return "Not placed: it would start at " + seconds(cue.start_ms) + " in the sequence, after the sequence ends (" + seconds(end) + ").";
+}
+
+function seconds(ms) {
+  return Math.round(ms / 100) / 10 + " s";
+}
 
 // Where a cue sits on the frame grid: start, length and source in point in
 // frames, and the same as ticks. Null with a reason when it would be empty.
@@ -495,16 +570,6 @@ function trackLabel(role) {
   return ROLE_LABELS[role] || "SFX";
 }
 
-// The role a lane's track is named for: the role most of its cues have
-// (SFX when tied).
-function laneRole(cues) {
-  const count = {};
-  for (const c of cues) count[c.role] = (count[c.role] || 0) + 1;
-  let best = "sfx";
-  for (const role of ROLES) if ((count[role] || 0) > (count[best] || 0)) best = role;
-  return best;
-}
-
 function overlaps(busy, start, end) {
   for (const [s, e] of busy) if (start < e && s < end) return true;
   return false;
@@ -514,34 +579,40 @@ function overlaps(busy, start, end) {
 // (`start`, `end`); `existing` are this run's tracks still in the sequence,
 // [{id, name, lane, role, busy: [[startFrame, endFrame], ...]}] (what is on
 // them now, whoever put it there); `trackNames` every audio track name in
-// the sequence. A cue goes on the first track of its lane with nothing at
-// its time; when every one is busy there, a new track is added for that
-// lane. New tracks come after all others, lane by lane, named "NOLGIA SFX 1",
-// "NOLGIA Ambience" and so on, never a name the sequence already has.
+// the sequence. Tracks are by ROLE, then lane: NOLGIA's package numbers
+// lanes across all roles (an effect and an ambience can share lane 1 when
+// they do not overlap), and an effect must never land on "NOLGIA Ambience".
+// A cue goes on the first track of its role and lane with nothing at its
+// time; when every one is busy there, a new track is added for that role
+// and lane. New tracks come after all others (effects, ambience, music,
+// voice; lane by lane), named "NOLGIA SFX 1", "NOLGIA Ambience" and so on,
+// never a name the sequence already has.
 // Resolves {tracks: [{key, id?, name, lane, role, isNew}], assign: {cue_id: key}}.
 function planTracks(cues, { existing = [], trackNames = [] } = {}) {
-  const byLane = new Map();
+  const groups = new Map();
   for (const c of cues) {
-    if (!byLane.has(c.lane)) byLane.set(c.lane, []);
-    byLane.get(c.lane).push(c);
+    const role = ROLES.includes(c.role) ? c.role : "sfx";
+    const key = role + ":" + c.lane;
+    if (!groups.has(key)) groups.set(key, { role, lane: c.lane, cues: [] });
+    groups.get(key).cues.push(c);
   }
-  const lanes = Array.from(byLane.keys()).sort((a, b) => a - b);
+  const order = Array.from(groups.values()).sort((a, b) => ROLES.indexOf(a.role) - ROLES.indexOf(b.role) || a.lane - b.lane);
   const tracks = existing.map((t) => ({
     key: "id:" + t.id,
     id: t.id,
     name: t.name,
     lane: t.lane,
-    role: t.role,
+    role: ROLES.includes(t.role) ? t.role : "sfx",
     isNew: false,
     busy: (t.busy || []).map((b) => [b[0], b[1]]),
   }));
   const fresh = [];
   const assign = {};
-  for (const lane of lanes) {
-    const laneCues = byLane.get(lane).slice().sort((a, b) => a.start - b.start || a.index - b.index);
-    const role = laneRole(laneCues);
-    for (const c of laneCues) {
-      let target = tracks.find((t) => t.lane === lane && !overlaps(t.busy, c.start, c.end));
+  for (const group of order) {
+    const { role, lane } = group;
+    const groupCues = group.cues.slice().sort((a, b) => a.start - b.start || a.index - b.index);
+    for (const c of groupCues) {
+      let target = tracks.find((t) => t.role === role && t.lane === lane && !overlaps(t.busy, c.start, c.end));
       if (!target) {
         target = { key: "new:" + fresh.length, name: null, lane, role, isNew: true, busy: [] };
         tracks.push(target);
@@ -640,30 +711,81 @@ function pendingCues(record) {
     .map((id) => Object.assign({ cue_id: id }, record.cues[id]));
 }
 
+// Two tick values within half a frame of each other (`tolerance` ticks).
+function nearTicks(a, b, tolerance) {
+  if (a === undefined || a === null || b === undefined || b === null) return false;
+  const d = BigInt(String(a).trim()) - BigInt(String(b).trim());
+  return (d < 0n ? -d : d) <= tolerance;
+}
+
 // Settles pending cues against what is on the run's tracks now (`state` as
-// for liveRunTracks): a clip of that file at that start on that track is the
-// cue, placed; anything else was not placed. Resolves how many of each.
-function resolvePending(record, state, now) {
-  const out = { placed: 0, not_placed: 0 };
+// for liveRunTracks): a clip of that file at that start on that track, with
+// the end and in point NOLGIA asked for, is the cue, placed. One of that file
+// at that start that the editor has since trimmed or slipped is left (the
+// editor's now); anything else was not placed. `timebase` sets the half
+// frame Premiere's rounding may add. Resolves how many of each.
+function resolvePending(record, state, now, timebase = null) {
+  const out = { placed: 0, not_placed: 0, left: 0 };
   if (!record) return out;
+  const half = timebase ? frameTicks(timebase) / 2n : 0n;
   const found = new Map(((state && state.tracks) || []).map((t) => [String(t.id), t]));
   for (const c of pendingCues(record)) {
     const live = found.get(String(c.track_id));
     const clip = live && (live.clips || []).find((x) => String(x.start) === String(c.start_ticks) && mediaKey(x.media) === mediaKey(c.media_path));
     const cue = record.cues[c.cue_id];
-    if (clip) {
+    const asked = clip && nearTicks(clip.end, c.end_ticks, half) && (clip.in === undefined || nearTicks(clip.in, c.in_ticks, half));
+    if (asked) {
       cue.status = "placed";
       cue.node_id = clip.node_id || null;
-      cue.end_ticks = clip.end || cue.end_ticks;
+      cue.end_ticks = String(clip.end);
+      if (clip.in !== undefined) cue.in_ticks = String(clip.in);
       cue.placed_at = cue.placed_at || now;
       cue.note = "Its placing took longer than the command; it was found on the timeline afterwards.";
       out.placed += 1;
+    } else if (clip) {
+      cue.status = "left";
+      cue.left_at = now;
+      cue.note = "Its placing took longer than the command, and it has been trimmed or slipped since, so it is the editor's now.";
+      out.left += 1;
     } else {
       cue.status = "not_placed";
       cue.note = "Its placing took longer than the command and it is not on the timeline.";
       out.not_placed += 1;
     }
     delete cue.pending_at;
+  }
+  return out;
+}
+
+// Tracks a place asked Premiere to add whose answer never came back (or came
+// back failed): written down with their names BEFORE the call, without an id.
+function pendingTracks(record) {
+  return record ? record.tracks.filter((t) => t.pending_at && !t.removed_at) : [];
+}
+
+// Settles pending tracks against the sequence's audio tracks now (`state`
+// with `named`: [{id, index, name, clips}] for the names asked about): a
+// track of that name after the tracks the sequence had when NOLGIA asked,
+// not already one of the run's, is the one NOLGIA added; none means
+// Premiere added none. Resolves {added: [names], none: [names]}.
+function resolvePendingTracks(record, state, now) {
+  const out = { added: [], none: [] };
+  if (!record) return out;
+  const named = (state && state.named) || [];
+  for (const t of pendingTracks(record)) {
+    const taken = new Set(record.tracks.filter((o) => o !== t && o.id !== null && o.id !== undefined).map((o) => String(o.id)));
+    const live = named.find((n) => String(n.name) === String(t.name) && !taken.has(String(n.id)) && Number(n.index) > Number(t.after || 0));
+    delete t.pending_at;
+    if (live) {
+      t.id = live.id;
+      t.added_at = t.added_at || now;
+      t.note = "Premiere Pro added it although its answer did not come back in time.";
+      out.added.push(t.name);
+    } else {
+      t.removed_at = now;
+      t.note = "Premiere Pro did not add it.";
+      out.none.push(t.name);
+    }
   }
   return out;
 }
@@ -681,20 +803,28 @@ function splitRepeat(cues, record) {
   return { todo, already };
 }
 
-// The tracks a run added and still holds: not removed, and not handed over
-// to the editor (a track `remove` kept because the editor put clips on it).
+// The tracks a run added and still holds: not removed, not still waiting
+// for Premiere's answer, and not handed over to the editor (a track
+// `remove` kept because the editor put clips on it).
 function activeTracks(record) {
-  return record ? record.tracks.filter((t) => !t.removed_at && !t.released_at) : [];
+  return record ? record.tracks.filter((t) => !t.removed_at && !t.released_at && !t.pending_at && t.id !== null && t.id !== undefined) : [];
 }
 
-// Is `clip` (the host's {start, media}) one this run placed on track `trackId`?
-// Known by its file and its start on that track, never by Premiere's node
-// id alone (node ids are not kept when a project is opened again).
+// Is `clip` (the host's {start, end, in, media}) exactly as this run placed
+// it, cue `c`? Its start, its end, its in point and its file all agree: a
+// clip the editor trimmed at either end, slipped or moved is not (it is the
+// editor's now). Never by Premiere's node id (node ids are not kept when a
+// project is opened again).
+function sameClip(c, clip) {
+  return String(c.start_ticks) === String(clip.start) && String(c.end_ticks) === String(clip.end) &&
+    (clip.in === undefined || String(c.in_ticks) === String(clip.in)) && mediaKey(c.media_path) === mediaKey(clip.media);
+}
+
+// Is `clip` one this run placed on track `trackId`, as it placed it?
 function isRunClip(record, trackId, clip) {
   for (const id of Object.keys(record.cues)) {
     const c = record.cues[id];
-    if ((c.status === "placed" || c.status === "pending") && String(c.track_id) === String(trackId) &&
-        String(c.start_ticks) === String(clip.start) && mediaKey(c.media_path) === mediaKey(clip.media)) return true;
+    if ((c.status === "placed" || c.status === "pending") && String(c.track_id) === String(trackId) && sameClip(c, clip)) return true;
   }
   return false;
 }
@@ -724,12 +854,13 @@ function liveRunTracks(record, state, timebase) {
 }
 
 // What `remove` may take out: each clip the run placed, found on the run's
-// own track (same id, still carrying the name NOLGIA gave it), at the start
-// NOLGIA placed it, of the file NOLGIA placed. A clip that does not agree on
-// all of these (moved, trimmed at its start, its track renamed) is left
-// alone and reported. Resolves {clips: [{key, track_id, track_name, start,
-// media}], left: [{key, name, reason}]}; `media` is the path exactly as
-// Premiere answered it, which the host checks again before removing.
+// own track (same id, still carrying the name NOLGIA gave it), exactly as
+// NOLGIA placed it: the same start, end, in point and file. A clip that does
+// not agree on all of these (moved, trimmed at either end, slipped, renamed
+// track) is left alone and reported by name. Resolves {clips: [{key,
+// track_id, track_name, start, end, in, media}], left: [{key, name,
+// reason}]}; `media` is the path exactly as Premiere answered it, and the
+// host checks all of it again before removing.
 function matchRunClips(record, state) {
   const found = new Map(((state && state.tracks) || []).map((t) => [String(t.id), t]));
   const names = {};
@@ -743,11 +874,19 @@ function matchRunClips(record, state) {
     if (!live) reason = "its track (" + (names[String(c.track_id)] || c.track_name || "?") + ") is no longer in the sequence";
     else if (String(live.name) !== String(names[String(c.track_id)])) reason = "its track was renamed to " + live.name + ", so it is not NOLGIA's to change";
     else {
-      clip = (live.clips || []).find((x) => String(x.start) === String(c.start_ticks) && mediaKey(x.media) === mediaKey(c.media_path));
-      if (!clip) reason = "it is not where NOLGIA placed it on " + live.name + " (moved, trimmed at its start or deleted)";
+      clip = (live.clips || []).find((x) => sameClip(c, x));
+      if (!clip) {
+        const there = (live.clips || []).find((x) => mediaKey(x.media) === mediaKey(c.media_path) && (String(x.start) === String(c.start_ticks) || String(x.end) === String(c.end_ticks)));
+        reason = there
+          ? "it was trimmed or slipped on " + live.name + " since NOLGIA placed it, so it is the editor's now"
+          : "it is not where NOLGIA placed it on " + live.name + " (moved, trimmed or deleted)";
+      }
     }
-    if (clip) clips.push({ key: c.cue_id, track_id: c.track_id, track_name: live.name, start: String(clip.start), media: clip.media, node_id: clip.node_id || null });
-    else left.push({ key: c.cue_id, name: c.name || c.cue_id, reason });
+    if (clip) {
+      const entry = { key: c.cue_id, track_id: c.track_id, track_name: live.name, start: String(clip.start), end: String(clip.end), media: clip.media, node_id: clip.node_id || null };
+      if (clip.in !== undefined) entry.in = String(clip.in);
+      clips.push(entry);
+    } else left.push({ key: c.cue_id, name: c.name || c.cue_id, reason });
   }
   return { clips, left };
 }
@@ -887,8 +1026,16 @@ module.exports = {
   mediaKey,
   pendingCues,
   resolvePending,
+  pendingTracks,
+  resolvePendingTracks,
+  sameClip,
   isRunClip,
   matchRunClips,
+  DOWNLOAD_HOSTS,
+  START_MARGIN_MS,
+  downloadHosts,
+  linkProblem,
+  startProblem,
   TICKS_PER_SECOND,
   ACTIONS,
   RANGES,

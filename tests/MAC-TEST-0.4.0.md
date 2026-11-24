@@ -1,8 +1,11 @@
 # Mac test for NOLGIA for Adobe 0.4.0 (sound design in Premiere Pro)
 
 0.4.0 has not been run on a Mac. This is the run that proves it there. It
-takes about 20 minutes. Nothing in it uses a NOLGIA account or credits: the
-plugin talks to the mock API on the Mac itself.
+takes about 20 minutes. Everything up to "What to send back" uses no NOLGIA
+account and no credits: the plugin talks to the mock API on the Mac itself,
+and the sounds are local files. That part never proves the real download of
+the sounds; the separate last section does, with one real run on the
+tester's own account, and it costs credits.
 
 ## What you need
 
@@ -49,6 +52,10 @@ plugin talks to the mock API on the Mac itself.
    - a repeated place places nothing twice
    - reopened, the editor's clip on A1, another sequence active: remove takes out exactly the run
    - a stereo sound split into two mono clips at import still goes in as one stereo clip
+   - remove leaves a clip the editor trimmed at its end and one the editor slipped, and names them
+   - a place made to fail right after its tracks were added leaves no NOLGIA track
+   - ambience and effects sharing a lane (a manifest shaped as NOLGIA's) go on their own tracks
+   - an override after an in to out preview lands on the right frame (planned video time + offset)
 7. Look at the result yourself once: open the project it made
    (`~/Documents/NOLGIA sound design proof <date>/project/sound proof.prproj`)
    in Premiere Pro. After the test the NOLGIA tracks are in again (the last
@@ -111,3 +118,40 @@ Write down the answer to each, with what the report shows:
 - Folder and file names: the sounds folder is `NOLGIA Sounds/<run>` next to
   the project, and names keep letters of any language; check that the file
   names in that folder read right in Finder.
+
+## Last, separate and optional: one real run with your own account
+
+Everything above uses the mock API and local files, so it never shows the
+plugin fetching a real plan's sounds from NOLGIA's storage on a Mac. This
+section does, once. **It costs plan credits** (2 credits per started minute
+of the video, charged when the plan is confirmed), so it is the owner's
+decision: do it only when the owner said yes, and only after every check
+above passed. Sound design is staff only for now: the account must be one
+NOLGIA opened it to (the panel's "Do the sound design." starter shows only
+then).
+
+1. Keep the 0.4.0 build from step 4 installed (the proof leaves it in), and
+   open Premiere Pro.
+2. In the NOLGIA panel, sign in with your own account and switch Connected
+   on. Check that "Do the sound design." is among the chat's suggestions; if
+   it is not, the account is not open to sound design: stop here and say so.
+3. Open a saved project of your own, or a copy of the proof's project, with
+   a sequence of at most one minute (one started minute: 2 credits), and
+   mark nothing else to keep it short.
+4. Click "Do the sound design.", read the card (what it does and the cost
+   line), then Start. Answer the agent: it reads the sequence, uploads a
+   small preview, and tells you the price. Say yes only if it is the 2
+   credits you expect. Wait for the plan and the cue sheet, then say yes to
+   put the sounds in.
+5. Check, and write down:
+   - the place answer's `placed` and `not_placed` (the agent can show it);
+   - the folder `NOLGIA Sounds/<plan id>` next to the project holds the WAVs
+     (they were downloaded from storage.googleapis.com, the default allowed
+     host; nothing else is allowed);
+   - the new NOLGIA tracks in the sequence, and your own tracks unchanged;
+   - `NOLGIA backups` next to the project holds the copy made before.
+6. Ask "Take the sound design out." and check the NOLGIA tracks are gone and
+   your own tracks are as before.
+7. Send back the plan id, the credits charged, the place answer and what
+   step 5 showed. Until this section has been run, macOS stays unclaimed
+   everywhere: "not yet run on a Mac".

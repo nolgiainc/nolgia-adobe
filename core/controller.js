@@ -281,7 +281,45 @@ class Controller {
       chat: this.signedIn ? this.chat.view() : null,
       chat_blocker: this.chatBlocker(),
       chat_accepted: this.chatAccepted,
+      sound_design_open: this.soundDesignOpen(),
     };
+  }
+
+  // Sound design is staff only while NOLGIA's Sound Library is closed, so the
+  // panel's one-click starter shows only for an account NOLGIA serves it to
+  // (only show options that work). nolgia-api decides it (its switch, or an
+  // admin email; nolgia.ai's soundLibraryOpenTo is the same rule): asked once
+  // per sign in with the cheapest read-only call it gates, GET /sounds/library
+  // for one sound (free): 200 is open, 404 closed. Anything else hides the
+  // starter and asks again in 10 minutes; nothing is ever shown as an error.
+  soundDesignOpen() {
+    if (this.app.app !== "premiere" || !this.signedIn) return false;
+    const token = this.token();
+    const known = this.soundAccess;
+    if (!known || known.token !== token || (!known.checking && known.retryAt && this.clock() >= known.retryAt)) {
+      this.checkSoundDesignAccess(token);
+    }
+    return Boolean(this.soundAccess && this.soundAccess.open);
+  }
+
+  checkSoundDesignAccess(token) {
+    const check = { token, open: false, checking: true, retryAt: 0 };
+    this.soundAccess = check;
+    const api = new ApiClient({ baseUrl: this.apiUrl(), token, userAgent: this.userAgent() });
+    api
+      .request("GET", "/sounds/library", undefined, { query: { page_size: "1" }, timeout: 15 })
+      .then(() => {
+        check.open = true;
+      })
+      .catch((err) => {
+        check.open = false;
+        const settled = err && (err.status === 404 || err.status === 401 || err.status === 403);
+        check.retryAt = settled ? 0 : this.clock() + 600;
+      })
+      .finally(() => {
+        check.checking = false;
+        if (this.soundAccess === check) this.bump();
+      });
   }
 
   statusLine() {

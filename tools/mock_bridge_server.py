@@ -38,8 +38,10 @@ Test helpers (no auth):
   POST /mock/agent/reply {message_id?, content?, status?, error?, error_code?, question?, queued?}
                     settles (or updates) a pending reply; without message_id, the newest pending one
   POST /mock/desktop-apps {plugin_version, release_note?, status?} | {"error": status} | {} (404 again)
-  POST /mock/sound-design-package {plan_id, answers: [{status?, body?, headers?, title?, detail?}]}: what
+  POST /mock/sound-design-package {plan_id, answers: [{status?, body?, headers?, title?, detail?, code?}]}: what
                     POST /sound-designs/plans/{plan_id}/package answers, one per call (the last repeats)
+  POST /mock/sound-library {open: bool}: whether GET /sounds/library answers this account (200) or 404,
+                    as nolgia-api does while the Sound Library is staff only
 
 Run:  python3 tools/mock_bridge_server.py --port 8765 --token test-token
 """
@@ -195,6 +197,8 @@ class MockState:
             self.agent_creates = []
             self.sound_design_packages = {}
             self.sound_design_requests = []
+            self.sound_library_open = False
+            self.sound_library_requests = []
             self.desktop_apps = dict(self.initial_desktop_apps)
             self.cond.notify_all()
 
@@ -1227,8 +1231,9 @@ SOUND_DESIGN_PACKAGE_FIELDS = ("format", "source_xml", "picks", "skip", "timelin
 @route("POST", r"/v1/sound-designs/plans/([^/]+)/package")
 def package_sound_design(h, plan_id):
     """The answers the test set with POST /mock/sound-design-package, one per
-    call (the last one repeats): a package, or "not ready yet" (202, or 200
-    with `pending`), or an error."""
+    call (the last one repeats): a package (200), or an error such as the
+    route's 503 sound_design_package_preparing with Retry-After while it is
+    still making the sounds."""
     h.user()
     body = strict_json(h.raw_body or b"{}", SOUND_DESIGN_PACKAGE_FIELDS,
                        types={"format": str, "picks": dict, "skip": list})
@@ -1242,8 +1247,29 @@ def package_sound_design(h, plan_id):
     status = int(answer.get("status", 200))
     if status >= 400:
         raise HttpError(status, answer.get("title", "Error"), answer.get("detail", ""),
-                        headers=answer.get("headers"))
+                        code=answer.get("code"), headers=answer.get("headers"))
     return h._send(status, answer.get("body"), headers=answer.get("headers"))
+
+
+@route("GET", r"/v1/sounds/library")
+def search_sound_library(h):
+    """The Sound Library's search: 404 for an account it is closed to (as
+    nolgia-api while it is staff only), else an empty page."""
+    h.user()
+    st = h.state
+    with st.cond:
+        st.sound_library_requests.append(dict(h.query))
+        if not st.sound_library_open:
+            raise HttpError(404, "Not Found", "not found")
+    return h._send(200, {"sounds": [], "page": 0, "page_size": 1, "relaxed": False})
+
+
+@route("POST", r"/mock/sound-library")
+def mock_sound_library(h):
+    body = h.json()
+    with h.state.cond:
+        h.state.sound_library_open = bool(body.get("open"))
+    return h._send(204)
 
 
 @route("POST", r"/mock/sound-design-package")
@@ -1632,6 +1658,7 @@ def mock_state(h):
             "agent_submits": list(st.agent_submits),
             "agent_creates": list(st.agent_creates),
             "sound_design_requests": list(st.sound_design_requests),
+            "sound_library_requests": list(st.sound_library_requests),
         }
     return h._send(200, out)
 

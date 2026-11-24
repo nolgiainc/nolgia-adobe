@@ -405,14 +405,22 @@
   });
   input.addEventListener("focus", () => send("chat_wake"));
 
-  function renderExamples(app) {
-    if (shownExamples === app) return;
-    shownExamples = app;
+  // Starters for workflows not every account has: shown only when the
+  // plugin's check says this account can use it (state.sound_design_open:
+  // sound design is staff only while NOLGIA's Sound Library is closed).
+  const STARTER_ACCESS = { "premiere-sound-design": "sound_design_open" };
+
+  function renderExamples(app, s) {
+    const open = Object.keys(STARTER_ACCESS).filter((p) => s && s[STARTER_ACCESS[p]]).join(",");
+    const key = app + "|" + open;
+    if (shownExamples === key) return;
+    shownExamples = key;
     const box = $("chat-examples");
     box.textContent = "";
     for (const example of EXAMPLES[app] || []) {
       const text = typeof example === "string" ? example : example.text;
       const preset = typeof example === "string" ? null : example.preset;
+      if (preset && STARTER_ACCESS[preset] && !(s && s[STARTER_ACCESS[preset]])) continue;
       const node = el("div", { class: preset ? "example starter" : "example", text });
       node.addEventListener("click", () => {
         if (!preset) {
@@ -536,7 +544,7 @@
     if (!view || !s.signed_in || s.login) return;
     const blocker = s.chat_blocker;
     $("chat-lead").textContent = "Tell NOLGIA Agent what to do in this " + s.app_name + ". It works right here.";
-    renderExamples(s.app);
+    renderExamples(s.app, s);
     input.placeholder = "Ask NOLGIA Agent to make or change something in " + s.app_name;
     showIf($("chat-intro"), view.empty && (view.loaded || Boolean(blocker)));
     showIf($("chat-new"), !view.empty);
