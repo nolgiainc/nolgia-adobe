@@ -88,6 +88,47 @@ test("a chat's name on nolgia.ai says which app it came from", () => {
   assert.ok(sessionName("x".repeat(200), "After Effects").length <= 80);
 });
 
+test("a workflow's starter starts the chat under that workflow, or without it when NOLGIA refuses the workflow", async () => {
+  const o = owner();
+  const chat = newChat(o);
+  await chat.start();
+  assert.equal(await chat.send("Do the sound design.", { preset: "premiere-sound-design" }), true);
+  const st = await support.state(server);
+  assert.deepEqual(st.agent_creates, [
+    { preset_slug: "premiere-sound-design", name: "Premiere Pro: Do the sound design.", app: { app: "premiere", instance_id: "unit-instance" } },
+  ]);
+  chat.reset({ forget: true });
+
+  // A workflow that is not published is refused with 400: the chat starts anyway.
+  const o2 = owner({ instanceId: "unit-instance-2" });
+  const realApi = o2.api;
+  const bodies = [];
+  o2.api = () => {
+    const api = realApi();
+    const create = api.createAgentSession.bind(api);
+    api.createAgentSession = async (body) => {
+      bodies.push(body);
+      if (body.preset_slug) {
+        const { ApiError } = require("../core/api");
+        throw new ApiError(400, { title: "Bad Request", detail: "preset_slug must name a public preset" });
+      }
+      return create(body);
+    };
+    return api;
+  };
+  const chat2 = newChat(o2);
+  await chat2.start();
+  assert.equal(await chat2.send("Do the sound design.", { preset: "premiere-sound-design" }), true);
+  assert.deepEqual(bodies.map((b) => Boolean(b.preset_slug)), [true, false]);
+  assert.equal(chat2.view().busy, true);
+  // A slug that is not a slug is never sent.
+  const chat3 = newChat(owner({ instanceId: "unit-instance-3" }));
+  await chat3.start();
+  await chat3.send("Hello", { preset: "../x" });
+  const st3 = await support.state(server);
+  assert.equal("preset_slug" in st3.agent_creates[st3.agent_creates.length - 1], false);
+});
+
 test("times sort to the microsecond, whatever their fraction", () => {
   const order = ["2026-10-29T00:15:01Z", "2026-10-29T00:15:01.000001Z", "2026-10-29T00:15:01.5Z", "2026-10-29T00:15:02Z"];
   assert.deepEqual(order.slice().sort((a, b) => (timeKey(a) < timeKey(b) ? -1 : 1)), order);

@@ -473,6 +473,11 @@ button {
 .example:hover {
   border-color: #3a4459;
 }
+/* A workflow's starter: one click starts it. */
+.example.starter {
+  border-left: 3px solid var(--orange);
+  font-weight: 600;
+}
 .thread {
   max-height: 360px;
   overflow-y: auto;

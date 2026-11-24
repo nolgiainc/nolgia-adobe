@@ -321,9 +321,12 @@
   // ------------------------------------------------------------------ chat
 
   // What the chat suggests before the first message: things this plugin and
-  // NOLGIA's workflows for the app do. A click puts one in the box.
+  // NOLGIA's workflows for the app do. A click puts one in the box; a
+  // workflow's starter (`preset`) is sent at once and starts the chat under
+  // that workflow.
   const EXAMPLES = {
     premiere: [
+      { text: "Do the sound design.", preset: "premiere-sound-design" },
       "Put my newest NOLGIA clip at the end of my timeline.",
       "Sort the clips in my project into bins by camera and scene.",
       "Install the Kodak Portra 400 look so I can pick it in Lumetri Color.",
@@ -399,14 +402,23 @@
     shownExamples = app;
     const box = $("chat-examples");
     box.textContent = "";
-    for (const text of EXAMPLES[app] || []) {
+    for (const example of EXAMPLES[app] || []) {
+      const text = typeof example === "string" ? example : example.text;
+      const preset = typeof example === "string" ? null : example.preset;
       box.appendChild(
         el("div", {
-          class: "example",
+          class: preset ? "example starter" : "example",
           text,
           onclick: () => {
-            input.value = text;
-            input.focus();
+            if (!preset) {
+              input.value = text;
+              input.focus();
+              return;
+            }
+            const view = chatState();
+            if (!view || state.chat_blocker || view.busy) return;
+            followNext = true;
+            send("chat_send", { text, preset });
           },
         })
       );

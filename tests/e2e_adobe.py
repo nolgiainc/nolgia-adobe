@@ -62,7 +62,7 @@ TOKEN = "e2e-token"
 VERSION = json.load(open(os.path.join(ADOBE, "package.json")))["version"]
 CAPABILITIES = ["info", "run", "preview", "import_asset", "export", "save", "open", "dit"]
 # Kinds only one app has (core/commands.js APP_KINDS).
-APP_CAPABILITIES = {"premiere": ["transcribe"]}
+APP_CAPABILITIES = {"premiere": ["transcribe", "sound_design"]}
 UPIA = r"C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe"
 UPIA_MAC = ("/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/"
             "UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent")

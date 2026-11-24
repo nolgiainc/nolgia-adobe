@@ -524,7 +524,7 @@ class Controller {
     } else if (kind === "clear_activity") {
       this.activity.clear();
     } else if (kind === "chat_send") {
-      this.chatSend(msg.text, msg.seq);
+      this.chatSend(msg.text, msg.seq, msg.preset);
     } else if (kind === "chat_stop") {
       this.chat.stop();
     } else if (kind === "chat_new") {
@@ -546,9 +546,9 @@ class Controller {
   // A message from the panel's box. `seq` is the panel's own count: once
   // NOLGIA takes the message, state().chat_accepted says so and the panel
   // clears the box (a message NOLGIA did not take stays in it).
-  chatSend(text, seq) {
+  chatSend(text, seq, preset = null) {
     if (this.chatBlocker() || this.chat.busy) return;
-    this.chat.send(String(text || "")).then((sent) => {
+    this.chat.send(String(text || ""), { preset: typeof preset === "string" ? preset : null }).then((sent) => {
       if (sent && Number.isFinite(Number(seq))) {
         this.chatAccepted = Number(seq);
         this.bump();
