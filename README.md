@@ -303,11 +303,17 @@ them out again. `action` is one of:
     the stereo track, 3 dB lower on each side (Premiere's pan law).
   - Time is kept for the Premiere side (60 s plus 1 s a sound): downloads
     stop while that much is left, and the rest is placed by placing again.
-    The new tracks (by name) and each sound are written to the record as
-    pending before Premiere is asked, so a place whose answer comes too late
-    is settled by the next place or taken out by `remove`. When adding the
-    tracks fails, Premiere takes out the empty ones it had just added, and
-    the error says which NOLGIA tracks, if any, are left.
+    The new tracks (by name, with the ids of the tracks the sequence had)
+    and each sound are written to the record as pending before Premiere is
+    asked, so a place whose answer comes too late is settled by the next
+    place or taken out by `remove`. A pending track is settled only on a
+    track of its name with an id the sequence did not have, and only when
+    it is empty or holds nothing but this run's sounds; a track of that name
+    with anything else on it is never taken as NOLGIA's (it stays, and
+    `remove` names it in `tracks_kept`). New tracks are told from the
+    sequence's own by id, never by their place; when adding them fails,
+    Premiere takes out the empty ones with a new id, never a track the
+    sequence had, and the error says which NOLGIA tracks, if any, are left.
   - The answer has per cue `status` (`placed`, `already_placed`,
     `not_placed` with the plain `reason`), NOLGIA's `warnings`, the new
     `tracks`, `folder`, `bin`, `backup` (and `backup_as_last_saved`),
