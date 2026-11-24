@@ -473,10 +473,21 @@ button {
 .example:hover {
   border-color: #3a4459;
 }
-/* A workflow's starter: one click starts it. */
+/* A workflow's starter: a click says what it does and what it costs; Start sends it. */
 .example.starter {
   border-left: 3px solid var(--orange);
   font-weight: 600;
+}
+.starter-confirm {
+  padding: 8px 9px;
+  margin-top: 4px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  line-height: 1.4;
+}
+.starter-confirm .cost {
+  margin-top: 6px;
 }
 .thread {
   max-height: 360px;

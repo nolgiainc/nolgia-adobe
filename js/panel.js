@@ -322,8 +322,8 @@
 
   // What the chat suggests before the first message: things this plugin and
   // NOLGIA's workflows for the app do. A click puts one in the box; a
-  // workflow's starter (`preset`) is sent at once and starts the chat under
-  // that workflow.
+  // workflow's starter (`preset`) first says what it will do and what a turn
+  // costs, and Start sends it in a new chat under that workflow.
   const EXAMPLES = {
     premiere: [
       { text: "Do the sound design.", preset: "premiere-sound-design" },
@@ -361,6 +361,14 @@
   function openLink(url) {
     if (/^https:\/\//.test(String(url || ""))) CEP.openURL(url);
   }
+
+  // What a workflow's starter says before anything is sent.
+  const STARTERS = {
+    "premiere-sound-design":
+      "NOLGIA Agent reads this sequence, makes a small preview of it, and tells you the price of the plan before " +
+      "anything is charged: 2 credits per started minute of video. Then it shows the sounds it picked and asks " +
+      "before putting them on new audio tracks. Nothing already on the timeline changes.",
+  };
 
   function chatState() {
     return (state && state.chat) || null;
@@ -405,23 +413,40 @@
     for (const example of EXAMPLES[app] || []) {
       const text = typeof example === "string" ? example : example.text;
       const preset = typeof example === "string" ? null : example.preset;
-      box.appendChild(
-        el("div", {
-          class: preset ? "example starter" : "example",
-          text,
-          onclick: () => {
-            if (!preset) {
-              input.value = text;
-              input.focus();
-              return;
-            }
-            const view = chatState();
-            if (!view || state.chat_blocker || view.busy) return;
-            followNext = true;
-            send("chat_send", { text, preset });
-          },
-        })
-      );
+      const node = el("div", { class: preset ? "example starter" : "example", text });
+      node.addEventListener("click", () => {
+        if (!preset) {
+          input.value = text;
+          input.focus();
+          return;
+        }
+        const open = box.querySelector(".starter-confirm");
+        if (open) {
+          open.remove();
+          return;
+        }
+        const view = chatState();
+        const confirm = el("div", { class: "starter-confirm" }, [
+          el("div", { text: STARTERS[preset] || text }),
+          el("div", { class: "cost", text: (view && view.costLine) || "" }),
+          el("div", { class: "row chat-buttons" }, [
+            button("Cancel", () => confirm.remove(), "small"),
+            button(
+              "Start",
+              () => {
+                const now = chatState();
+                if (!now || state.chat_blocker || now.busy) return;
+                confirm.remove();
+                followNext = true;
+                send("chat_send", { text, preset });
+              },
+              "small primary"
+            ),
+          ]),
+        ]);
+        node.after(confirm);
+      });
+      box.appendChild(node);
     }
   }
 

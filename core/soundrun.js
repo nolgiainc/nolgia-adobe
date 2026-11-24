@@ -413,6 +413,11 @@ async function place(ctl, command, api) {
     const wanted = Array.from(new Set(todo.map((c) => fetched.get(c.cue_id))));
     const imported = await ctl.hostOrFail("sd_import", { project, paths: wanted, bin_path: record.bin }, command);
     result.bin = imported.bin;
+    // Items Premiere had split into mono clips (Default Audio Tracks), set back to one clip.
+    const remapped = (imported.mapping || []).filter((m) => m && m.changed).map((m) => path.basename(String(m.media)));
+    if (remapped.length) result.audio_mapping_fixed = remapped;
+    const unmapped = (imported.mapping || []).filter((m) => m && m.error).map((m) => path.basename(String(m.media)) + ": " + m.error);
+    if (unmapped.length) result.audio_mapping_errors = unmapped;
     const inBin = new Map((imported.items || []).map((m) => [sd.mediaKey(m), m]));
     const placeable = [];
     for (const c of todo) {

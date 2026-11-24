@@ -38,21 +38,24 @@ plugin talks to the mock API on the Mac itself.
    screen's dialogs, allow it (System Settings > Privacy & Security >
    Accessibility); without it a Premiere Pro dialog may stay up and the test
    waits for you to close it.
-6. Watch the lines it prints. Each check says PASS or FAIL:
+6. Watch the lines it prints. Each check says PASS or FAIL. Premiere Pro
+   quits and starts again once in the middle (that is part of the test):
    - starts and connects with sound_design
-   - a scratch project with the bars on a 23.976 sequence
+   - a scratch project: the bars on a 23.976 sequence, and a second sequence
    - read: tracks, clips, in and out, markers
    - preview: H.264 of the in to out range, uploaded, its start on the timeline
-   - place: eight tones on three new tracks, the editor's tracks as they were
-   - the mix measures: gain 0/-6/-12 dB, mono centred, fades from silence
+   - place by plan id: nine tones on three new tracks, the editor's tracks as they were
+   - the mix measures: gain 0/-6/-12 dB, mono centred, fades from silence; +12 dB measured
    - a repeated place places nothing twice
-   - remove: the run's clips and tracks out, the files kept, A1 as it was
+   - reopened, the editor's clip on A1, another sequence active: remove takes out exactly the run
+   - a stereo sound split into two mono clips at import still goes in as one stereo clip
 7. Look at the result yourself once: open the project it made
    (`~/Documents/NOLGIA sound design proof <date>/project/sound proof.prproj`)
-   in Premiere Pro. After the test the NOLGIA tracks are gone again (that is
-   the remove check); the sound files are still in `NOLGIA Sounds/e2e-run-1`
-   next to the project and in the bin `NOLGIA imports / Sound design`, and
-   the backups are in `NOLGIA backups`.
+   in Premiere Pro. After the test the NOLGIA tracks are in again (the last
+   check places the run once more); the sound files are in
+   `NOLGIA Sounds/e2e0b1d4-0b1d-4c55-9a3e-2b7c9d0e1f23` next to the project
+   and in the bin `NOLGIA imports / Sound design`, and the backups are in
+   `NOLGIA backups`.
 8. Put the version from step 2 back if it was not 0.4.0: download it from
    nolgia.ai/plugins/premiere (or the GitHub release) and install it the
    usual way.
@@ -64,17 +67,45 @@ plugin talks to the mock API on the Mac itself.
   Premiere Pro version (Premiere Pro > About Premiere Pro).
 - On Windows (Premiere Pro 26.2, November 2026) the mix measured: a tone at
   -15.05 dBFS RMS placed at 0, -6 and -12 dB came out at -15.05, -21.05 and
-  -27.05; a mono tone on the new stereo track at -18.06 on each side; fades
+  -27.06; a mono tone on the new stereo track at -18.06 on each side; fades
   start from silence and reach the level exactly at their end. The Mac must
   measure the same within 0.2 dB. Anything else is a finding: write it down
-  with the numbers.
+  with the numbers. The `gain +12 dB asked` line is a measurement, not a
+  check: compare it with the Windows number in the PR.
+
+## Questions only a Mac answers
+
+Write down the answer to each, with what the report shows:
+
+1. **The preview preset.** On macOS Premiere Pro's presets sit inside the
+   app bundle. The plugin looks for them under `app.path` and under
+   `app.path` + `Contents/`. Does the preview check pass? If it fails with
+   "H.264 presets were not found", the message names the folder it looked
+   in: send it, and the listing of
+   `/Applications/Adobe Premiere Pro 2026/Adobe Premiere Pro 2026.app/Contents/MediaIO/systempresets/4E49434B_48323634`.
+2. **The preview's temporary folder.** The plugin writes the edited preset
+   and the preview into a new folder under the system's temporary folder
+   (`os.tmpdir()`, on a Mac something under `/var/folders/...`) and Premiere
+   Pro renders there. Does Premiere Pro write the file there (the preview
+   check passes), or does it refuse the folder?
+3. **Names in another Unicode form.** `getMediaPath()` on macOS may answer a
+   file name in its decomposed form (NFD), and a Mac OS Extended (HFS+)
+   drive stores names that way. NOLGIA compares names in one form. Run the
+   test once more with the work folder on a Mac OS Extended drive if there is
+   one, and a name with an accent: `--workdir "/Volumes/<drive>/Café proof"`.
+   Do place, the repeated place and remove still pass, with no "(2)" copies
+   of the sounds in `NOLGIA Sounds/<plan id>`?
+4. **Clip ids after reopening.** The report's `node_ids` says how many of
+   Premiere's clip ids were the same after the project was opened again
+   (`same_after_reopen` of `clips`). On Windows: see the PR. Remove never
+   relies on them; this is for the record.
+5. **QE and the sequence on screen.** `qe_follows_openSequence` says which
+   sequence QE was on right after `openSequence` in the same script. The
+   remove check proves NOLGIA's tracks went from the right sequence while
+   another one was on screen.
 
 ## Known differences to look for on a Mac
 
-- Premiere Pro's presets sit inside the app bundle (`Contents/MediaIO`); the
-  plugin looks there too. If the preview check fails with "H.264 presets were
-  not found", send the folder listing of
-  `/Applications/Adobe Premiere Pro 2026/Adobe Premiere Pro 2026.app/Contents/MediaIO/systempresets/4E49434B_48323634`.
 - Premiere Pro on macOS ignores AppleScript (also its quit), so the test
   quits it through the plugin.
 - Folder and file names: the sounds folder is `NOLGIA Sounds/<run>` next to

@@ -545,7 +545,8 @@ class AgentChat {
 
   async _submit(content, preset = null) {
     const api = this.owner.api();
-    if (this.sessionId) {
+    // A workflow's starter always opens a new chat under that workflow.
+    if (this.sessionId && !preset) {
       try {
         return await api.submitAgentMessage({ content, session_id: this.sessionId });
       } catch (err) {
@@ -563,21 +564,27 @@ class AgentChat {
     this.instanceId = this.owner.instanceId; // the chat is remembered for the instance it is pinned to
     const body = { name: sessionName(content, app.name), app: { app: app.app, instance_id: this.owner.instanceId } };
     let session;
-    if (preset && PRESET_SLUG.test(preset)) {
+    if (preset) {
+      if (!PRESET_SLUG.test(preset)) throw new ApiError(400, { title: "Bad Request", code: "workflow_not_published", detail: "not a workflow" });
       try {
         session = await api.createAgentSession(Object.assign({ preset_slug: preset }, body));
       } catch (err) {
-        // A workflow NOLGIA has not published (yet) is refused with 400: the
-        // chat starts without it, and the message still says what to do.
-        if (!(err instanceof ApiError && err.status === 400)) throw err;
+        // A workflow NOLGIA has not published (yet) is refused with 400:
+        // nothing is sent (a chat without the workflow is not what was asked).
+        if (err instanceof ApiError && err.status === 400) {
+          throw new ApiError(400, { title: "Bad Request", code: "workflow_not_published", detail: err.detail });
+        }
+        throw err;
       }
+    } else {
+      session = await api.createAgentSession(body);
     }
-    if (!session) session = await api.createAgentSession(body);
     const pin = session && session.app;
     if (!session || !session.id || !pin || pin.app !== app.app || pin.instance_id !== this.owner.instanceId) {
       // Never chat in a session that is not pinned here: the pin cannot be added later.
       throw new ApiError(500, { title: "NOLGIA did not pin the new chat to this " + app.name, detail: "Update NOLGIA for " + app.name + ", or try again later." });
     }
+    if (preset && this.sessionId !== session.id) this.rows = new Map();
     this.sessionId = session.id;
     this._remember(this.sessionId);
     return await api.submitAgentMessage({ content, session_id: session.id });
@@ -586,6 +593,13 @@ class AgentChat {
   _submitNotice(err) {
     if (err instanceof ApiError) {
       const detail = String(err.detail || "");
+      if (err.code === "workflow_not_published") {
+        return {
+          kind: "workflow",
+          text: "That workflow is not on NOLGIA yet, so nothing was sent and nothing was charged. Write what you want in the box instead.",
+          action: null,
+        };
+      }
       if (err.status === 404 && /no agent/i.test(detail)) {
         return {
           kind: "no_agent",
