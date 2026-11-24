@@ -149,9 +149,10 @@ function fakePremiere(root, { saved = true, nfd = false } = {}) {
       for (const p of args.paths) if (fs.existsSync(p) && !s.bins[key].includes(asPremiere(p))) s.bins[key].push(asPremiere(p));
       return { bin: key, items: s.bins[key].slice() };
     },
-    // As the host: the new tracks are told apart by id (Premiere may put
-    // them elsewhere than after the last: `insert_at`, test mode only), and
-    // a failure takes out only the EMPTY ones with a new id.
+    // As the host: the new tracks are told apart by id; put anywhere but
+    // after the last (`insert_at`, test mode only) they are neither named
+    // nor taken out (QE acts by place); a failure takes out only the EMPTY
+    // ones with a new id.
     sd_add_tracks: (args) => {
       sameProject(args);
       s.addArgs.push(args);
@@ -159,6 +160,12 @@ function fakePremiere(root, { saved = true, nfd = false } = {}) {
       const at = typeof args.insert_at === "number" ? args.insert_at : s.seq.audio.length;
       const made = args.names.map((name) => ({ id: s.nextId++, name, clips: [] }));
       s.seq.audio.splice(at, 0, ...made);
+      if (at < had.size) {
+        const where = made.map((t) => "A" + (s.seq.audio.indexOf(t) + 1));
+        made.forEach((t) => (t.name = "Audio " + (s.seq.audio.indexOf(t) + 1)));
+        throw new Error("Premiere Pro put the new tracks among the sequence's own (" + where.join(", ") + "), not after them, so NOLGIA named none; " +
+          "NOLGIA took no track out either. The new empty tracks are " + where.join(", ") + ": delete them by hand.");
+      }
       const tracks = made.map((t) => ({ id: t.id, index: s.seq.audio.indexOf(t) + 1, name: t.name }));
       if (s.failAddTracks === "clean" || args.fail_after_add) {
         s.seq.audio = s.seq.audio.filter((t) => had.has(t.id) || t.clips.length);
@@ -550,12 +557,14 @@ test("the end-to-end proof's failure after the tracks works only in test mode", 
   assert.match(cmd.error, /No NOLGIA track was left/);
   assert.equal(pr.seq.audio.length, 3);
   // Tracks Premiere puts BEFORE the editor's (asked at index 0, test mode):
-  // the editor's empty tracks, now after the new ones, stay.
+  // none is named or taken out; the error says which to delete by hand.
   const before = pr.seq.audio.map((x) => [x.id, x.name]);
-  const front = await command({ action: "place", plan_id: PLAN, test_fail_after_tracks: true, test_tracks_at: 0 });
+  const front = await command({ action: "place", plan_id: PLAN, test_tracks_at: 0 });
   assert.equal(front.status, "failed");
   assert.equal(pr.addArgs[pr.addArgs.length - 1].insert_at, 0);
-  assert.deepEqual(pr.seq.audio.map((x) => [x.id, x.name]), before);
+  assert.match(front.error, /among the sequence's own \(A1\).*The new empty tracks are A1: delete them by hand/);
+  assert.deepEqual(pr.seq.audio.slice(1).map((x) => [x.id, x.name]), before, "the editor's tracks as they were");
+  assert.deepEqual(pr.seq.audio[0].clips, []);
 });
 
 test("a place whose answer comes too late: what it placed is written down first, and remove takes it out", async (t) => {

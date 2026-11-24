@@ -886,15 +886,29 @@
     return out;
   }
 
+  // The sequence's audio track names, by place (the DOM's).
+  function audioNames(seq) {
+    var out = [];
+    for (var i = 0; i < seq.audioTracks.numTracks; i++) out.push(String(seq.audioTracks[i].name));
+    return out;
+  }
+
   // Adds one audio track per name, after all others, and names them. The
   // new tracks are told from the sequence's own by their ids (noted before
-  // the add), never by their place: NOLGIA asks for them after the last
-  // track but does not count on Premiere putting them there. When anything
-  // goes wrong after Premiere added tracks (fewer than asked, one not empty,
-  // a name not taken), the tracks this call added that are EMPTY (a new id,
-  // nothing on them, QE's track at that place the same one) are taken out
-  // again, from the last, before failing; a track the sequence had before is
-  // never touched. The failure says what, if anything, is left.
+  // the add), never by their place. QE names and removes tracks BY PLACE,
+  // and its places are not always the DOM's: with tracks added before
+  // others (Premiere Pro 26.2, the proof's test mode), QE's track 0 was not
+  // the DOM's track 0, and naming "the new track" by place renamed one of
+  // the editor's. So the new tracks are named only when they are after all
+  // the sequence's own (where QE's places have always been the DOM's), and
+  // after each name every other track must still have its own name.
+  // Otherwise nothing is named or removed by place, and the failure says
+  // which new empty tracks to delete by hand. When anything goes wrong after
+  // Premiere added tracks (fewer than asked, one not empty, a name not
+  // taken), the tracks this call added that are EMPTY (a new id, nothing on
+  // them, QE's track at that place the same one) are taken out again, from
+  // the last, before failing; a track the sequence had before is never
+  // touched. The failure says what, if anything, is left.
   // `fail_after_add` and `insert_at` (the end-to-end proof, test mode only):
   // fail right after the tracks are added and named; ask for them at that
   // index instead of after the last.
@@ -918,10 +932,19 @@
       }
       // The tracks this call added: ids the sequence did not have, in order.
       var fresh = [];
-      for (var f = 0; f < seq.audioTracks.numTracks; f++) if (!had[String(seq.audioTracks[f].id)]) fresh.push(f);
+      var where = [];
+      for (var f = 0; f < seq.audioTracks.numTracks; f++) {
+        if (had[String(seq.audioTracks[f].id)]) continue;
+        fresh.push(f);
+        where.push("A" + (f + 1));
+      }
       if (!problem && fresh.length !== names.length) {
         problem = "Premiere Pro did not add the audio tracks (it added " + fresh.length + ", NOLGIA asked for " + names.length + ")";
       }
+      // QE by place only where the new tracks are after all others.
+      var byPlace = true;
+      for (var e0 = 0; e0 < fresh.length; e0++) if (fresh[e0] !== count + e0) byPlace = false;
+      if (!problem && !byPlace) problem = "Premiere Pro put the new tracks among the sequence's own (" + where.join(", ") + "), not after them, so NOLGIA named none";
       for (var i = 0; !problem && i < fresh.length; i++) {
         var k0 = fresh[i];
         var t = seq.audioTracks[k0];
@@ -929,10 +952,20 @@
           problem = "A track Premiere Pro just added is not empty";
           break;
         }
+        var namesBefore = audioNames(seq);
         try {
           q.getAudioTrackAt(k0).setName(String(names[i]));
         } catch (e1) {}
-        var got = String(seq.audioTracks[k0].name);
+        var namesNow = audioNames(seq);
+        for (var j = 0; j < namesNow.length; j++) {
+          if (j !== k0 && namesNow[j] !== namesBefore[j]) {
+            byPlace = false;
+            problem = "Naming a new track renamed the sequence's track A" + (j + 1) + " instead (it was " + namesBefore[j] + ", it is " + namesNow[j] + "): rename it back by hand";
+            break;
+          }
+        }
+        if (problem) break;
+        var got = namesNow[k0];
         if (got !== String(names[i])) {
           problem = "Premiere Pro did not take the name " + names[i] + " for a new track (it is " + got + ")";
           break;
@@ -940,11 +973,12 @@
         out.push({ id: t.id, index: k0 + 1, name: got });
       }
       if (!problem && args.fail_after_add === true) {
-        var where = [];
-        for (var w = 0; w < fresh.length; w++) where.push("A" + (fresh[w] + 1));
         problem = "The test asked this place to fail after its tracks were added (" + where.join(", ") + ")";
       }
       if (!problem) return { tracks: out };
+      if (!byPlace && fresh.length) {
+        N.fail(problem + "; NOLGIA took no track out either. The new empty track" + (fresh.length === 1 ? " is " : "s are ") + where.join(", ") + ": delete " + (fresh.length === 1 ? "it" : "them") + " by hand.");
+      }
       // Take out what this call added: a new id, empty, and QE's track at
       // that place is the same one (name, nothing on it).
       var removed = 0;

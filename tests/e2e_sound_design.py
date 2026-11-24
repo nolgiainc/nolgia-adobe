@@ -38,17 +38,19 @@ NOLGIA's; the mock answers test tones this script writes as local paths
      remove takes out the rest and LEAVES those two, naming them;
    - a place made to fail right after Premiere added its tracks (test mode
      only) leaves no NOLGIA track: the sequence's tracks are as before;
-   - the same with the new tracks asked for BEFORE the editor's (test mode
-     only, as a layout with other tracks might put them): the editor's
-     empty tracks after them stay, ids, names and clips as before;
    - a crash between NOLGIA writing down its new tracks and Premiere adding
-     them (the record put back to that point), then the editor's own track
-     of that name with a clip on it: remove does not take it as NOLGIA's,
-     does not remove it, and names it;
+     them (that place's record put back to that point), then the editor's
+     own track of that name with a clip on it: remove does not take it as
+     NOLGIA's, does not remove it, and names it;
    - a manifest shaped as NOLGIA's (an effect and an ambience on lane 1):
      ambience and effects go on their own tracks;
    - an override's start_ms is the planned video's time: with the preview's
-     timeline_offset_ms it lands on the right frame.
+     timeline_offset_ms it lands on the right frame;
+   - last, new tracks asked for BEFORE the editor's (test mode only, as a
+     layout with other tracks might put them): QE acts by place and its
+     places then differ from the DOM's, so none is named or removed; the
+     editor's tracks keep their clips and names, the error names the two
+     empty tracks to delete by hand.
 5. Saves and quits Premiere Pro through the plugin, and prints the numbers
    (also as JSON with --report).
 
@@ -61,6 +63,7 @@ import argparse
 import json
 import math
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -277,6 +280,7 @@ look();
 if (!item) { app.project.importFiles([%(tone)s], true, app.project.rootItem, false); look(); }
 app.enableQE();
 app.project.openSequence(seq.sequenceID);
+app.project.activeSequence = seq;
 var q = qe.project.getActiveSequence();
 var n = seq.audioTracks.numTracks;
 q.addTracks(0, 0, 1, 1, n, 0, 0);
@@ -693,38 +697,18 @@ def run_proof(caller, checks, win, work, wwork, numbers, start_and_connect, proc
         return [(str(t["id"]), t["name"], [(c["start_frame"], c["end_frame"], c["in_ms"], c["media_path"]) for c in t["clips"]])
                 for t in r["audio_tracks"]]
 
-    front_record = os.path.join(work, "project", "NOLGIA Sounds", PLAN_FRONT, "placement.json")
-
-    def failed_place_at_the_front_keeps_the_editors_tracks():
-        before = full_tracks()
-        package_for(PLAN_FRONT, [local_file("g1", "Door", "sfx", 1, 1000, 1000),
-                                 local_file("g2", "Room tone", "ambience", 1, 3000, 3000)])
-        cmd = caller.command("sound_design", {"action": "place", "plan_id": PLAN_FRONT, "sequence": state["seq"],
-                                              "test_fail_after_tracks": True, "test_tracks_at": 0}, timeout=600)
-        err = cmd.get("error") or ""
-        numbers["front_failed_place"] = {"status": cmd["status"], "error": err,
-                                         "before": [(i, n, len(c)) for i, n, c in before]}
-        assert cmd["status"] == "failed", cmd
-        assert "The test asked this place to fail after its tracks were added" in err, err
-        assert "took out the 2 empty tracks" in err and "No NOLGIA track was left in the sequence." in err, err
-        after = full_tracks()
-        numbers["front_failed_place"]["after"] = [(i, n, len(c)) for i, n, c in after]
-        assert after == before, (before, after)
-        record = json.load(open(front_record, encoding="utf-8"))
-        numbers["front_failed_place"]["record_tracks"] = record["tracks"]
-        assert all(t.get("removed_at") and t.get("before_ids") for t in record["tracks"]), record["tracks"]
-    checks.check("premiere", "a failed place whose tracks Premiere put BEFORE the editor's leaves the editor's empty tracks",
-                 failed_place_at_the_front_keeps_the_editors_tracks)
+    fail_record = os.path.join(work, "project", "NOLGIA Sounds", PLAN_FAIL, "placement.json")
 
     def crash_then_editors_track_of_that_name():
-        # The record as NOLGIA wrote it before asking Premiere (a crash then):
-        # its two tracks pending, Premiere never asked.
-        record = json.load(open(front_record, encoding="utf-8"))
+        # The failed place's record as NOLGIA wrote it before asking Premiere
+        # (a crash then): its two tracks pending, Premiere never asked.
+        record = json.load(open(fail_record, encoding="utf-8"))
+        assert all(t.get("before_ids") for t in record["tracks"]), record["tracks"]
         for t in record["tracks"]:
             t.pop("removed_at", None)
             t.pop("note", None)
             t["pending_at"] = "2026-11-24T00:00:00Z"
-        with open(front_record, "w", encoding="utf-8") as handle:
+        with open(fail_record, "w", encoding="utf-8") as handle:
             json.dump(record, handle, indent=2)
         name = record["tracks"][0]["name"]
         tone_path = json.dumps(win.to_win(os.path.join(media, "editor tone.wav")).replace("\\", "/"))
@@ -733,7 +717,7 @@ def run_proof(caller, checks, win, work, wwork, numbers, start_and_connect, proc
         numbers["crash_editor_track"] = made
         assert made["name"] == name and made["clips"] == 1, made
         before = full_tracks()
-        r = caller.ok("sound_design", {"action": "remove", "run_id": PLAN_FRONT}, timeout=300)
+        r = caller.ok("sound_design", {"action": "remove", "run_id": PLAN_FAIL}, timeout=300)
         numbers["crash_remove"] = r
         assert r["removed"] == 0 and r["tracks_removed"] == [], r
         kept = [t for t in r["tracks_kept"] if t["name"] == name]
@@ -743,7 +727,7 @@ def run_proof(caller, checks, win, work, wwork, numbers, start_and_connect, proc
         assert after == before, (before, after)
         mine = [t for t in after if t[0] == made["id"]]
         assert mine and mine[0][1] == name and len(mine[0][2]) == 1, after
-        settled = json.load(open(front_record, encoding="utf-8"))["tracks"]
+        settled = json.load(open(fail_record, encoding="utf-8"))["tracks"]
         numbers["crash_record_tracks"] = settled
         first = settled[0]
         assert first.get("released_at") and first.get("id") is None and not first.get("pending_at"), first
@@ -807,6 +791,38 @@ def run_proof(caller, checks, win, work, wwork, numbers, start_and_connect, proc
         assert frames == [frame_of(2000 + offset), frame_of(6000)] == [72, 144], frames
     checks.check("premiere", "an override's start_ms on the planned video's clock lands on the right frame with the offset",
                  override_on_the_planned_clock)
+
+    def tracks_put_before_the_editors_touch_nothing():
+        # Last: Premiere's QE and DOM track places differ after this (seen in
+        # an earlier run), so nothing runs after it.
+        before = full_tracks()
+        package_for(PLAN_FRONT, [local_file("g1", "Door", "sfx", 1, 1000, 1000),
+                                 local_file("g2", "Room tone", "ambience", 1, 3000, 3000)])
+        cmd = caller.command("sound_design", {"action": "place", "plan_id": PLAN_FRONT, "sequence": state["seq"],
+                                              "test_tracks_at": 0}, timeout=600)
+        err = cmd.get("error") or ""
+        after = full_tracks()
+        numbers["front_place"] = {"status": cmd["status"], "error": err,
+                                  "before": [(i, n, len(c)) for i, n, c in before],
+                                  "after": [(i, n, len(c)) for i, n, c in after]}
+        assert cmd["status"] == "failed", cmd
+        assert "among the sequence's own (A1, A2)" in err and "delete them by hand" in err, err
+        default = re.compile(r"^Audio \d+$")
+        was = {i: (n, c) for i, n, c in before}
+        new = [(i, n, c) for i, n, c in after if i not in was]
+        assert len(new) == 2 and all(not c and default.match(n) for _, n, c in new), new
+        # The editor's tracks: all there, the same clips, every name the
+        # editor gave the same (Premiere's own "Audio N" names follow the place).
+        for i, n, c in after:
+            if i in was:
+                assert c == was[i][1], (i, was[i], c)
+                assert n == was[i][0] or (default.match(n) and default.match(was[i][0])), (i, was[i][0], n)
+        assert len(after) == len(before) + 2, (before, after)
+        record = json.load(open(os.path.join(work, "project", "NOLGIA Sounds", PLAN_FRONT, "placement.json"), encoding="utf-8"))
+        numbers["front_place"]["record_tracks"] = record["tracks"]
+        assert all(t.get("removed_at") and not t.get("pending_at") for t in record["tracks"]), record["tracks"]
+    checks.check("premiere", "new tracks Premiere puts BEFORE the editor's: none named, none removed, the editor's tracks as they were",
+                 tracks_put_before_the_editors_touch_nothing)
 
 
 if __name__ == "__main__":
