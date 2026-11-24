@@ -299,7 +299,7 @@ async function place(ctl, command, api) {
       project: pf.path,
       sequence: { id: seq.id, name: seq.name },
       folder: paths.folder,
-      bin: ["NOLGIA imports", "Sound design", today(now) + " " + a.run_id.slice(0, 8)],
+      bin: ["NOLGIA imports", "Sound design", today(now) + " " + a.run_id.slice(0, 8).replace(/[._-]+$/, "")],
       now: isoTime(now),
     });
   }
