@@ -73,6 +73,7 @@ function fakePremiere(root, { saved = true, nfd = false } = {}) {
     nextNode: 100,
     bins: {},
     stallPlace: false,
+    addArgs: [],
     // sd_add_tracks: "clean" fails after adding and takes its tracks out
     // again (as the host does); "late" adds them and never answers;
     // "late-busy" also leaves Premiere unable to answer the next sd_state.
@@ -125,6 +126,7 @@ function fakePremiere(root, { saved = true, nfd = false } = {}) {
         project: s.open,
         sequence: facts(),
         track_names: s.seq.audio.map((t) => t.name),
+        audio_ids: s.seq.audio.map((t) => t.id),
         tracks: (args.track_ids || []).map(find).filter(Boolean).map((t) => brief(t, s.seq.audio.indexOf(t))),
         named: s.seq.audio.map(brief).filter((t) => (args.track_names || []).includes(t.name)),
       };
@@ -147,16 +149,19 @@ function fakePremiere(root, { saved = true, nfd = false } = {}) {
       for (const p of args.paths) if (fs.existsSync(p) && !s.bins[key].includes(asPremiere(p))) s.bins[key].push(asPremiere(p));
       return { bin: key, items: s.bins[key].slice() };
     },
+    // As the host: the new tracks are told apart by id (Premiere may put
+    // them elsewhere than after the last: `insert_at`, test mode only), and
+    // a failure takes out only the EMPTY ones with a new id.
     sd_add_tracks: (args) => {
       sameProject(args);
-      const count = s.seq.audio.length;
-      const tracks = args.names.map((name) => {
-        const t = { id: s.nextId++, name, clips: [] };
-        s.seq.audio.push(t);
-        return { id: t.id, index: s.seq.audio.length, name };
-      });
+      s.addArgs.push(args);
+      const had = new Set(s.seq.audio.map((t) => t.id));
+      const at = typeof args.insert_at === "number" ? args.insert_at : s.seq.audio.length;
+      const made = args.names.map((name) => ({ id: s.nextId++, name, clips: [] }));
+      s.seq.audio.splice(at, 0, ...made);
+      const tracks = made.map((t) => ({ id: t.id, index: s.seq.audio.indexOf(t) + 1, name: t.name }));
       if (s.failAddTracks === "clean" || args.fail_after_add) {
-        s.seq.audio.splice(count);
+        s.seq.audio = s.seq.audio.filter((t) => had.has(t.id) || t.clips.length);
         throw new Error("Premiere Pro did not add the audio tracks; NOLGIA took out the " + tracks.length + " empty tracks Premiere Pro had added.");
       }
       if (s.failAddTracks === "late-busy") s.stateBusy = 1; // and Premiere cannot be asked right after
@@ -485,12 +490,15 @@ test("tracks whose adding never answered are written down first: the error says 
   assert.deepEqual(pr.seq.audio.map((x) => x.name), ["Audio 1", "Audio 2", "Audio 3", "NOLGIA SFX 1", "NOLGIA Ambience"]);
   const record = JSON.parse(fs.readFileSync(path.join(path.dirname(pr.file), "NOLGIA Sounds", PLAN, "placement.json"), "utf8"));
   assert.deepEqual(record.tracks.map((x) => [x.name, x.id, Boolean(x.pending_at)]), [["NOLGIA SFX 1", null, true], ["NOLGIA Ambience", null, true]]);
-  // The editor makes a track of their own meanwhile.
+  assert.deepEqual(record.tracks[0].before_ids, ["2", "3", "4"], "the sequence's own tracks by id");
+  // The editor deletes an earlier track (NOLGIA SFX 1 is now A3, no longer
+  // after the 3 tracks the sequence had) and makes one of their own.
+  pr.seq.audio.splice(1, 1);
   pr.seq.audio.push({ id: 99, name: "Foley (mine)", clips: [] });
   const out = await command({ action: "remove", run_id: PLAN });
   assert.equal(out.status, "succeeded", out.error);
   assert.deepEqual(out.result.tracks_removed.sort(), ["NOLGIA Ambience", "NOLGIA SFX 1"]);
-  assert.deepEqual(pr.seq.audio.map((x) => x.name), ["Audio 1", "Audio 2", "Audio 3", "Foley (mine)"]);
+  assert.deepEqual(pr.seq.audio.map((x) => x.name), ["Audio 1", "Audio 3", "Foley (mine)"]);
 
   // When Premiere can be asked right away, the error names what is left.
   pr.failAddTracks = "late";
@@ -500,7 +508,36 @@ test("tracks whose adding never answered are written down first: the error says 
   pr.failAddTracks = null;
   const removed = await command({ action: "remove", run_id: PLAN });
   assert.deepEqual(removed.result.tracks_removed.sort(), ["NOLGIA Ambience", "NOLGIA SFX 1"]);
-  assert.deepEqual(pr.seq.audio.map((x) => x.name), ["Audio 1", "Audio 2", "Audio 3", "Foley (mine)"]);
+  assert.deepEqual(pr.seq.audio.map((x) => x.name), ["Audio 1", "Audio 3", "Foley (mine)"]);
+});
+
+test("a new track named like NOLGIA's that holds the editor's clips is never taken as NOLGIA's: remove leaves it", async (t) => {
+  const { ctl, pr, root } = await connectedPremiere({ NOLGIA_SOUND_DESIGN_LOCAL: "1" });
+  t.after(() => finish(ctl));
+  const src = sounds(root);
+  await packageAnswers(PLAN, [packageOf([cue("door", src.door), cue("rain", src.rain, { role: "ambience", start_ms: 0, source_out_ms: 2000 })])]);
+  // Premiere's answer never comes (a crash), and it cannot be asked right after.
+  pr.failAddTracks = "late-busy";
+  const cmd = await command({ action: "place", plan_id: PLAN });
+  assert.equal(cmd.status, "failed");
+  pr.failAddTracks = null;
+  // The editor puts a clip of their own on the track named NOLGIA SFX 1.
+  const mine = { start: "0", end: String(2 * TPS), in: "0", media: "C:/media/foley.wav", node_id: "e1" };
+  pr.seq.audio.find((x) => x.name === "NOLGIA SFX 1").clips.push(mine);
+  const out = await command({ action: "remove", run_id: PLAN });
+  assert.equal(out.status, "succeeded", out.error);
+  assert.deepEqual(out.result.tracks_removed, ["NOLGIA Ambience"]);
+  assert.deepEqual(out.result.tracks_kept.map((k) => k.name), ["NOLGIA SFX 1"]);
+  assert.match(out.result.tracks_kept[0].reason, /clips NOLGIA did not place/);
+  assert.deepEqual(pr.seq.audio.map((x) => [x.name, x.clips.length]), [["Audio 1", 1], ["Audio 2", 0], ["Audio 3", 0], ["NOLGIA SFX 1", 1]]);
+  assert.deepEqual(pr.seq.audio[3].clips, [mine], "the editor's clip as it was");
+  const record = JSON.parse(fs.readFileSync(path.join(path.dirname(pr.file), "NOLGIA Sounds", PLAN, "placement.json"), "utf8"));
+  const sfx = record.tracks.find((x) => x.name === "NOLGIA SFX 1");
+  assert.ok(sfx.released_at && sfx.id === null && !sfx.pending_at, JSON.stringify(sfx));
+  // A place again puts nothing on it.
+  const again = await command({ action: "place", plan_id: PLAN });
+  assert.equal(again.status, "succeeded", again.error);
+  assert.deepEqual(pr.seq.audio.map((x) => [x.name, x.clips.length]), [["Audio 1", 1], ["Audio 2", 0], ["Audio 3", 0], ["NOLGIA SFX 1", 1], ["NOLGIA SFX 2", 1], ["NOLGIA Ambience", 1]]);
 });
 
 test("the end-to-end proof's failure after the tracks works only in test mode", async (t) => {
@@ -512,6 +549,13 @@ test("the end-to-end proof's failure after the tracks works only in test mode", 
   assert.equal(cmd.status, "failed");
   assert.match(cmd.error, /No NOLGIA track was left/);
   assert.equal(pr.seq.audio.length, 3);
+  // Tracks Premiere puts BEFORE the editor's (asked at index 0, test mode):
+  // the editor's empty tracks, now after the new ones, stay.
+  const before = pr.seq.audio.map((x) => [x.id, x.name]);
+  const front = await command({ action: "place", plan_id: PLAN, test_fail_after_tracks: true, test_tracks_at: 0 });
+  assert.equal(front.status, "failed");
+  assert.equal(pr.addArgs[pr.addArgs.length - 1].insert_at, 0);
+  assert.deepEqual(pr.seq.audio.map((x) => [x.id, x.name]), before);
 });
 
 test("a place whose answer comes too late: what it placed is written down first, and remove takes it out", async (t) => {

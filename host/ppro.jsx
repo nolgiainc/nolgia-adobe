@@ -802,7 +802,11 @@
   A.sd_state = function (args) {
     var seq = findSequence(args.sequence, true);
     var names = [];
-    for (var i = 0; i < seq.audioTracks.numTracks; i++) names.push(String(seq.audioTracks[i].name));
+    var all = [];
+    for (var i = 0; i < seq.audioTracks.numTracks; i++) {
+      names.push(String(seq.audioTracks[i].name));
+      all.push(seq.audioTracks[i].id);
+    }
     var tracks = [];
     var ids = args.track_ids || [];
     for (var j = 0; j < ids.length; j++) {
@@ -823,7 +827,7 @@
         }
       }
     }
-    return { project: projectFsName(), sequence: seqFacts(seq), track_names: names, tracks: tracks, named: named };
+    return { project: projectFsName(), sequence: seqFacts(seq), track_names: names, audio_ids: all, tracks: tracks, named: named };
   };
 
   // Imports the run's files into its own bin. Nothing else in the bin is
@@ -882,13 +886,18 @@
     return out;
   }
 
-  // Adds one audio track per name after all others and names them. When
-  // anything goes wrong after Premiere added tracks (fewer than asked, one
-  // not empty, a name not taken), the EMPTY tracks this call added (those
-  // after the ones the sequence had) are taken out again, from the last,
-  // before failing; the failure says what, if anything, is left.
-  // `fail_after_add` (the end-to-end proof, test mode only) fails right
-  // after the tracks are added and named.
+  // Adds one audio track per name, after all others, and names them. The
+  // new tracks are told from the sequence's own by their ids (noted before
+  // the add), never by their place: NOLGIA asks for them after the last
+  // track but does not count on Premiere putting them there. When anything
+  // goes wrong after Premiere added tracks (fewer than asked, one not empty,
+  // a name not taken), the tracks this call added that are EMPTY (a new id,
+  // nothing on them, QE's track at that place the same one) are taken out
+  // again, from the last, before failing; a track the sequence had before is
+  // never touched. The failure says what, if anything, is left.
+  // `fail_after_add` and `insert_at` (the end-to-end proof, test mode only):
+  // fail right after the tracks are added and named; ask for them at that
+  // index instead of after the last.
   A.sd_add_tracks = function (args) {
     sameProject(args);
     var seq = findSequence(args.sequence, true);
@@ -896,41 +905,53 @@
     if (!names.length) return { tracks: [] };
     return withActive(seq, function (q) {
       var count = seq.audioTracks.numTracks;
+      var had = {};
+      for (var h = 0; h < count; h++) had[String(seq.audioTracks[h].id)] = true;
+      var at = typeof args.insert_at === "number" && args.insert_at >= 0 && args.insert_at <= count ? args.insert_at : count;
       var problem = null;
       var out = [];
       try {
-        // 0 video tracks; names.length audio tracks of type 1 after the last one.
-        q.addTracks(0, 0, names.length, 1, count, 0, 0);
+        // 0 video tracks; names.length audio tracks of type 1 at `at`.
+        q.addTracks(0, 0, names.length, 1, at, 0, 0);
       } catch (e) {
         problem = "Premiere Pro refused to add audio tracks (" + e + ")";
       }
-      if (!problem && seq.audioTracks.numTracks !== count + names.length) {
-        problem = "Premiere Pro did not add the audio tracks (it has " + seq.audioTracks.numTracks + ", NOLGIA expected " + (count + names.length) + ")";
+      // The tracks this call added: ids the sequence did not have, in order.
+      var fresh = [];
+      for (var f = 0; f < seq.audioTracks.numTracks; f++) if (!had[String(seq.audioTracks[f].id)]) fresh.push(f);
+      if (!problem && fresh.length !== names.length) {
+        problem = "Premiere Pro did not add the audio tracks (it added " + fresh.length + ", NOLGIA asked for " + names.length + ")";
       }
-      for (var i = 0; !problem && i < names.length; i++) {
-        var t = seq.audioTracks[count + i];
+      for (var i = 0; !problem && i < fresh.length; i++) {
+        var k0 = fresh[i];
+        var t = seq.audioTracks[k0];
         if (t.clips.numItems) {
           problem = "A track Premiere Pro just added is not empty";
           break;
         }
         try {
-          q.getAudioTrackAt(count + i).setName(String(names[i]));
+          q.getAudioTrackAt(k0).setName(String(names[i]));
         } catch (e1) {}
-        var got = String(seq.audioTracks[count + i].name);
+        var got = String(seq.audioTracks[k0].name);
         if (got !== String(names[i])) {
           problem = "Premiere Pro did not take the name " + names[i] + " for a new track (it is " + got + ")";
           break;
         }
-        out.push({ id: t.id, index: count + i + 1, name: got });
+        out.push({ id: t.id, index: k0 + 1, name: got });
       }
-      if (!problem && args.fail_after_add === true) problem = "The test asked this place to fail after its tracks were added";
+      if (!problem && args.fail_after_add === true) {
+        var where = [];
+        for (var w = 0; w < fresh.length; w++) where.push("A" + (fresh[w] + 1));
+        problem = "The test asked this place to fail after its tracks were added (" + where.join(", ") + ")";
+      }
       if (!problem) return { tracks: out };
-      // Take out what this call added: empty, after the tracks the sequence
-      // had, and QE's track at that place is the same one (name, nothing on it).
+      // Take out what this call added: a new id, empty, and QE's track at
+      // that place is the same one (name, nothing on it).
       var removed = 0;
       var left = [];
-      for (var k = seq.audioTracks.numTracks - 1; k >= count; k--) {
+      for (var k = seq.audioTracks.numTracks - 1; k >= 0; k--) {
         var tk = seq.audioTracks[k];
+        if (had[String(tk.id)]) continue;
         var name = String(tk.name);
         var qName = null;
         var qBusy = 0;

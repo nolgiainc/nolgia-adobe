@@ -247,9 +247,12 @@ function validateArgs(args) {
   out.picks = picksArg(args.picks);
   out.skip = skipArg(args.skip);
   out.overrides = overridesArg(args.overrides);
-  // The end-to-end proof's way to fail a place right after its tracks are
-  // added; honoured only in test mode (NOLGIA_SOUND_DESIGN_LOCAL=1).
+  // The end-to-end proof's ways to fail a place right after its tracks are
+  // added, and to have Premiere add them at another place than after the
+  // last (as a layout with other tracks might); honoured only in test mode
+  // (NOLGIA_SOUND_DESIGN_LOCAL=1).
   if (args.test_fail_after_tracks === true) out.test_fail_after_tracks = true;
+  if (Number.isInteger(args.test_tracks_at) && args.test_tracks_at >= 0) out.test_tracks_at = args.test_tracks_at;
   return out;
 }
 
@@ -764,23 +767,36 @@ function pendingTracks(record) {
 }
 
 // Settles pending tracks against the sequence's audio tracks now (`state`
-// with `named`: [{id, index, name, clips}] for the names asked about): a
-// track of that name after the tracks the sequence had when NOLGIA asked,
-// not already one of the run's, is the one NOLGIA added; none means
-// Premiere added none. Resolves {added: [names], none: [names]}.
+// with `named`: [{id, index, name, clips}] for the names asked about). The
+// one NOLGIA added is a track of that name whose id is new (not one of
+// `before_ids`, the ids the sequence had when NOLGIA asked: by id, never by
+// its place, since the editor may have deleted a track before it), not
+// already one of the run's, and EMPTY or holding only clips this run placed
+// there. A new track
+// of that name holding anything else is never NOLGIA's: it is left alone
+// (kept); none at all means Premiere added none. A record written before
+// `before_ids` (only `after`, the count then) falls back to the place.
+// Resolves {added: [names], none: [names], kept: [names]}.
 function resolvePendingTracks(record, state, now) {
-  const out = { added: [], none: [] };
+  const out = { added: [], none: [], kept: [] };
   if (!record) return out;
   const named = (state && state.named) || [];
   for (const t of pendingTracks(record)) {
     const taken = new Set(record.tracks.filter((o) => o !== t && o.id !== null && o.id !== undefined).map((o) => String(o.id)));
-    const live = named.find((n) => String(n.name) === String(t.name) && !taken.has(String(n.id)) && Number(n.index) > Number(t.after || 0));
+    const before = Array.isArray(t.before_ids) ? new Set(t.before_ids.map(String)) : null;
+    const isNew = (n) => (before ? !before.has(String(n.id)) : Number(n.index) > Number(t.after || 0));
+    const candidates = named.filter((n) => String(n.name) === String(t.name) && !taken.has(String(n.id)) && isNew(n));
+    const live = candidates.find((n) => (n.clips || []).every((c) => isRunClip(record, n.id, c)));
     delete t.pending_at;
     if (live) {
       t.id = live.id;
       t.added_at = t.added_at || now;
       t.note = "Premiere Pro added it although its answer did not come back in time.";
       out.added.push(t.name);
+    } else if (candidates.length) {
+      t.released_at = now;
+      t.note = "A new track of this name is in the sequence, but it holds clips NOLGIA did not place, so it is not taken as NOLGIA's and stays as it is.";
+      out.kept.push(t.name);
     } else {
       t.removed_at = now;
       t.note = "Premiere Pro did not add it.";

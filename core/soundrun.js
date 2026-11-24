@@ -375,10 +375,13 @@ function tracksLeftText(left, runId) {
     return "NOLGIA could not check which of its new tracks (" + left.unknown.join(", ") + ") Premiere Pro added; it wrote them down, " +
       "and action remove with run_id " + runId + " takes out any of them that are in the sequence.";
   }
+  const kept = (left.kept || []).length
+    ? " A new track named " + left.kept.join(", ") + " holds clips NOLGIA did not place, so NOLGIA does not take it as its own and leaves it."
+    : "";
   if (left.added.length) {
-    return "These empty NOLGIA tracks are in the sequence: " + left.added.join(", ") + "; action remove with run_id " + runId + " takes them out.";
+    return "These empty NOLGIA tracks are in the sequence: " + left.added.join(", ") + "; action remove with run_id " + runId + " takes them out." + kept;
   }
-  return "No NOLGIA track was left in the sequence.";
+  return "No NOLGIA track was left in the sequence." + kept;
 }
 
 async function place(ctl, command, api) {
@@ -528,11 +531,15 @@ async function place(ctl, command, api) {
         role: t.role,
         pending_at: isoTime(ctl.clock()),
         after: (state.track_names || []).length,
+        // The sequence's own tracks by id: a later place or remove takes as
+        // NOLGIA's only a track of that name with an id not in here.
+        before_ids: Array.isArray(state.audio_ids) ? state.audio_ids.map(String) : undefined,
       }));
       record.tracks.push(...planned);
       writeJson(paths.record, record);
       const args = { project, sequence: seq.id, names: fresh.map((t) => t.name) };
       if (localOk && a.test_fail_after_tracks) args.fail_after_add = true;
+      if (localOk && a.test_tracks_at !== undefined) args.insert_at = a.test_tracks_at;
       let added;
       try {
         added = await ctl.hostOrFail("sd_add_tracks", args, command);
@@ -546,6 +553,7 @@ async function place(ctl, command, api) {
         Object.assign(planned[i], { id: got[i].id, name: got[i].name, added_at: isoTime(now) });
         delete planned[i].pending_at;
         delete planned[i].after;
+        delete planned[i].before_ids;
         ids[t.key] = got[i].id;
       });
       writeJson(paths.record, record); // a failure from here on can still be taken out
@@ -879,7 +887,7 @@ async function remove(ctl, command) {
   // its track, start, end, in point and file all agree with the record.
   const state = allTracks(await ctl.hostOrFail("sd_state", stateArgs(record.sequence.id, record), command));
   const at = isoTime(ctl.clock());
-  settle(record, state, at);
+  const pendingNow = settle(record, state, at);
   const trimmedPending = Object.keys(record.cues).filter((k) => record.cues[k].status === "left" && record.cues[k].left_at === at);
   const tracks = sd.activeTracks(record);
   const match = sd.matchRunClips(record, state);
@@ -916,7 +924,9 @@ async function remove(ctl, command) {
     removed: (outcome.removed || []).length,
     left: left.map((l) => ({ cue_id: l.key, name: l.name, reason: l.reason + ", so it was left in the sequence." })),
     tracks_removed: (outcome.tracks_removed || []).map((id) => names[String(id)] || String(id)),
-    tracks_kept: (outcome.tracks_kept || []).map((t) => ({ name: t.name || names[String(t.id)], reason: t.reason })),
+    tracks_kept: (outcome.tracks_kept || []).map((t) => ({ name: t.name || names[String(t.id)], reason: t.reason })).concat(
+      pendingNow.tracks.kept.map((name) => ({ name, reason: "it holds clips NOLGIA did not place, so NOLGIA did not take it as its own; it stays." }))
+    ),
     note:
       "The sound files stay in " + paths.folder + " and in the bin " + record.bin.join(" / ") +
       "; delete them by hand if they are not wanted.",

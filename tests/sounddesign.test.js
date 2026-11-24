@@ -487,7 +487,7 @@ test("a place that ran out of time: its pending cues are settled by what is on t
   assert.deepEqual(sd.splitRepeat([{ cue_id: "a" }, { cue_id: "b" }], record).todo.map((c) => c.cue_id), ["b"]);
 });
 
-test("tracks a place asked for but never heard back about are found by name after the tracks the sequence had", () => {
+test("tracks a place asked for but never heard back about (a record with only the count then) are found by name after the tracks the sequence had", () => {
   const record = sd.newRecord({ runId: "r1", project: "p", sequence: { id: "s", name: "Edit" }, folder: "f", bin: ["b"], now: "t0" });
   record.tracks.push({ id: 7, name: "NOLGIA SFX 1", lane: 1, role: "sfx" });
   record.tracks.push({ id: null, name: "NOLGIA SFX 2", lane: 2, role: "sfx", pending_at: "t0", after: 4 });
@@ -497,10 +497,40 @@ test("tracks a place asked for but never heard back about are found by name afte
     { id: 7, index: 4, name: "NOLGIA SFX 1", clips: [] },
     { id: 12, index: 5, name: "NOLGIA SFX 2", clips: [] },
   ] }, "t1");
-  assert.deepEqual(got, { added: ["NOLGIA SFX 2"], none: ["NOLGIA Ambience"] });
+  assert.deepEqual(got, { added: ["NOLGIA SFX 2"], none: ["NOLGIA Ambience"], kept: [] });
   assert.deepEqual(sd.activeTracks(record).map((t) => [t.id, t.name]), [[7, "NOLGIA SFX 1"], [12, "NOLGIA SFX 2"]]);
   assert.equal(record.tracks[2].removed_at, "t1");
   assert.deepEqual(sd.pendingTracks(record), []);
+});
+
+test("a pending track is settled by id, name and what is on it: never a track the sequence had, never one with the editor's clips", () => {
+  const record = sd.newRecord({ runId: "r1", project: "p", sequence: { id: "s", name: "Edit" }, folder: "f", bin: ["b"], now: "t0" });
+  const pending = (name) => ({ id: null, name, lane: 1, role: "sfx", pending_at: "t0", after: 4, before_ids: ["2", "3", "4", "5"] });
+  record.tracks.push(pending("NOLGIA SFX 1"), pending("NOLGIA SFX 2"), pending("NOLGIA SFX 3"), pending("NOLGIA Ambience"));
+  const got = sd.resolvePendingTracks(record, { named: [
+    // The editor deleted an earlier track: NOLGIA's is at index 4, not after the 4 the sequence had.
+    { id: 12, index: 4, name: "NOLGIA SFX 1", clips: [] },
+    // A new track of NOLGIA's name with the editor's own clip on it.
+    { id: 13, index: 5, name: "NOLGIA SFX 2", clips: [{ start: "0", end: "100", in: "0", media: "C:/mine.wav" }] },
+    // A track the sequence had, renamed by the editor to NOLGIA's name, empty.
+    { id: 5, index: 3, name: "NOLGIA SFX 3", clips: [] },
+    // Two of that name: the editor's (busy) and NOLGIA's (empty).
+    { id: 14, index: 6, name: "NOLGIA Ambience", clips: [{ start: "0", end: "100", in: "0", media: "C:/rain.wav" }] },
+    { id: 15, index: 7, name: "NOLGIA Ambience", clips: [] },
+  ] }, "t1");
+  assert.deepEqual(got, { added: ["NOLGIA SFX 1", "NOLGIA Ambience"], none: ["NOLGIA SFX 3"], kept: ["NOLGIA SFX 2"] });
+  assert.deepEqual(sd.activeTracks(record).map((t) => [t.id, t.name]), [[12, "NOLGIA SFX 1"], [15, "NOLGIA Ambience"]]);
+  const kept = record.tracks[1];
+  assert.ok(kept.released_at === "t1" && kept.id === null && !kept.removed_at, JSON.stringify(kept));
+  assert.equal(record.tracks[2].removed_at, "t1");
+  assert.deepEqual(sd.pendingTracks(record), []);
+
+  // One holding only clips this run placed on it is the run's.
+  const again = sd.newRecord({ runId: "r1", project: "p", sequence: { id: "s", name: "Edit" }, folder: "f", bin: ["b"], now: "t0" });
+  again.tracks.push(pending("NOLGIA SFX 1"));
+  again.cues.door = { status: "pending", track_id: 12, start_ticks: "0", end_ticks: "100", in_ticks: "0", media_path: "C:/door.wav" };
+  const mine = sd.resolvePendingTracks(again, { named: [{ id: 12, index: 6, name: "NOLGIA SFX 1", clips: [{ start: "0", end: "100", in: "0", media: "C:/door.wav" }] }] }, "t1");
+  assert.deepEqual(mine, { added: ["NOLGIA SFX 1"], none: [], kept: [] });
 });
 
 test("the preview: long side 960, the in to out range or all, at most 10 minutes", () => {

@@ -38,6 +38,13 @@ NOLGIA's; the mock answers test tones this script writes as local paths
      remove takes out the rest and LEAVES those two, naming them;
    - a place made to fail right after Premiere added its tracks (test mode
      only) leaves no NOLGIA track: the sequence's tracks are as before;
+   - the same with the new tracks asked for BEFORE the editor's (test mode
+     only, as a layout with other tracks might put them): the editor's
+     empty tracks after them stay, ids, names and clips as before;
+   - a crash between NOLGIA writing down its new tracks and Premiere adding
+     them (the record put back to that point), then the editor's own track
+     of that name with a clip on it: remove does not take it as NOLGIA's,
+     does not remove it, and names it;
    - a manifest shaped as NOLGIA's (an effect and an ambience on lane 1):
      ambience and effects go on their own tracks;
    - an override's start_ms is the planned video's time: with the preview's
@@ -72,6 +79,7 @@ PLAN = "e2e0b1d4-0b1d-4c55-9a3e-2b7c9d0e1f23"
 PLAN_FAIL = "e2e0b1d4-1a11-4c55-9a3e-2b7c9d0e1f23"
 PLAN_ROLES = "e2e0b1d4-2b22-4c55-9a3e-2b7c9d0e1f23"
 PLAN_OFFSET = "e2e0b1d4-3c33-4c55-9a3e-2b7c9d0e1f23"
+PLAN_FRONT = "e2e0b1d4-4d44-4c55-9a3e-2b7c9d0e1f23"
 BARS = os.path.join(HERE, "fixtures", "sound-proof-bars-23976.mp4")
 TONE_AMP = 0.25  # RMS -15.05 dBFS, peak -12.04 dBFS
 SOURCE_RMS = 20 * math.log10(TONE_AMP / math.sqrt(2))
@@ -251,6 +259,33 @@ slip.inPoint = at(Number(slip.inPoint.ticks) + %(shift)d);
 out.trim_after = brief(clipAt(%(track)s, %(trim)s));
 out.slip_after = brief(clipAt(%(track)s, %(slip)s));
 result = out;
+"""
+
+# The editor's own track after the others, given `name`, with a piece of the
+# editor's tone on it at frame 48. Answers the track.
+EDITOR_TRACK = r"""
+var seq = null;
+for (var i = 0; i < app.project.sequences.numSequences; i++) if (String(app.project.sequences[i].sequenceID) === %(id)s) seq = app.project.sequences[i];
+var item = null;
+function look() {
+  for (var j = 0; j < app.project.rootItem.children.numItems; j++) {
+    var c = app.project.rootItem.children[j];
+    try { if (String(c.getMediaPath()).replace(/\\/g, "/").toLowerCase() === %(tone)s.toLowerCase()) item = c; } catch (e) {}
+  }
+}
+look();
+if (!item) { app.project.importFiles([%(tone)s], true, app.project.rootItem, false); look(); }
+app.enableQE();
+app.project.openSequence(seq.sequenceID);
+var q = qe.project.getActiveSequence();
+var n = seq.audioTracks.numTracks;
+q.addTracks(0, 0, 1, 1, n, 0, 0);
+q.getAudioTrackAt(n).setName(%(name)s);
+var tr = seq.audioTracks[n];
+item.setInPoint(0, 4); item.setOutPoint(String(24 * %(tb)d), 4);
+tr.overwriteClip(item, String(48 * %(tb)d));
+item.clearInPoint(); item.clearOutPoint();
+result = { id: String(tr.id), index: n + 1, name: String(tr.name), clips: tr.clips.numItems, tracks: seq.audioTracks.numTracks };
 """
 
 # Where each tone goes (ms) and what the exported mix must measure there.
@@ -652,6 +687,68 @@ def run_proof(caller, checks, win, work, wwork, numbers, start_and_connect, proc
         assert record["tracks"] and all(t.get("removed_at") and not t.get("pending_at") for t in record["tracks"]), record["tracks"]
     checks.check("premiere", "a place made to fail after its tracks were added leaves no NOLGIA track",
                  failed_place_leaves_no_track)
+
+    def full_tracks():
+        r = caller.ok("sound_design", {"action": "read", "sequence": state["seq"]}, timeout=60)
+        return [(str(t["id"]), t["name"], [(c["start"], c["end"], c["media"]) for c in t["clips"]]) for t in r["audio_tracks"]]
+
+    front_record = os.path.join(work, "project", "NOLGIA Sounds", PLAN_FRONT, "placement.json")
+
+    def failed_place_at_the_front_keeps_the_editors_tracks():
+        before = full_tracks()
+        package_for(PLAN_FRONT, [local_file("g1", "Door", "sfx", 1, 1000, 1000),
+                                 local_file("g2", "Room tone", "ambience", 1, 3000, 3000)])
+        cmd = caller.command("sound_design", {"action": "place", "plan_id": PLAN_FRONT, "sequence": state["seq"],
+                                              "test_fail_after_tracks": True, "test_tracks_at": 0}, timeout=600)
+        err = cmd.get("error") or ""
+        numbers["front_failed_place"] = {"status": cmd["status"], "error": err,
+                                         "before": [(i, n, len(c)) for i, n, c in before]}
+        assert cmd["status"] == "failed", cmd
+        assert "The test asked this place to fail after its tracks were added" in err, err
+        assert "took out the 2 empty tracks" in err and "No NOLGIA track was left in the sequence." in err, err
+        after = full_tracks()
+        numbers["front_failed_place"]["after"] = [(i, n, len(c)) for i, n, c in after]
+        assert after == before, (before, after)
+        record = json.load(open(front_record, encoding="utf-8"))
+        numbers["front_failed_place"]["record_tracks"] = record["tracks"]
+        assert all(t.get("removed_at") and t.get("before_ids") for t in record["tracks"]), record["tracks"]
+    checks.check("premiere", "a failed place whose tracks Premiere put BEFORE the editor's leaves the editor's empty tracks",
+                 failed_place_at_the_front_keeps_the_editors_tracks)
+
+    def crash_then_editors_track_of_that_name():
+        # The record as NOLGIA wrote it before asking Premiere (a crash then):
+        # its two tracks pending, Premiere never asked.
+        record = json.load(open(front_record, encoding="utf-8"))
+        for t in record["tracks"]:
+            t.pop("removed_at", None)
+            t.pop("note", None)
+            t["pending_at"] = "2026-11-24T00:00:00Z"
+        with open(front_record, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, indent=2)
+        name = record["tracks"][0]["name"]
+        tone_path = json.dumps(win.to_win(os.path.join(media, "editor tone.wav")).replace("\\", "/"))
+        made = caller.ok("run", {"code": EDITOR_TRACK % {"id": json.dumps(state["seq"]), "tb": TB, "tone": tone_path,
+                                                          "name": json.dumps(name)}}, timeout=60)["value"]
+        numbers["crash_editor_track"] = made
+        assert made["name"] == name and made["clips"] == 1, made
+        before = full_tracks()
+        r = caller.ok("sound_design", {"action": "remove", "run_id": PLAN_FRONT}, timeout=300)
+        numbers["crash_remove"] = r
+        assert r["removed"] == 0 and r["tracks_removed"] == [], r
+        kept = [t for t in r["tracks_kept"] if t["name"] == name]
+        assert kept and "clips NOLGIA did not place" in kept[0]["reason"], r["tracks_kept"]
+        after = full_tracks()
+        numbers["crash_tracks_after"] = [(i, n, len(c)) for i, n, c in after]
+        assert after == before, (before, after)
+        mine = [t for t in after if t[0] == made["id"]]
+        assert mine and mine[0][1] == name and len(mine[0][2]) == 1, after
+        settled = json.load(open(front_record, encoding="utf-8"))["tracks"]
+        numbers["crash_record_tracks"] = settled
+        first = settled[0]
+        assert first.get("released_at") and first.get("id") is None and not first.get("pending_at"), first
+        assert settled[1].get("removed_at") and not settled[1].get("pending_at"), settled[1]
+    checks.check("premiere", "after a crash, the editor's own track of NOLGIA's name with a clip is not adopted or removed",
+                 crash_then_editors_track_of_that_name)
 
     def roles_on_their_own_tracks():
         before, _ = track_names()
