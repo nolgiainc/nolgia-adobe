@@ -1,0 +1,348 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Sound design in Premiere Pro (core/sounddesign.js): file names written by
+// strangers made safe, milliseconds to frames and ticks, lanes to new tracks,
+// overlaps, gain and fades, the placement record, repeat and remove, the
+// preview's size, range and preset.
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+
+const sd = require("../core/sounddesign");
+const c = require("../core/commands");
+const { APPS } = require("../core/index");
+
+const PR = APPS.PPRO;
+// Premiere's frame lengths in ticks (sequence.timebase).
+const TB = { "23.976": "10594584000", "25": "10160640000", "29.97": "8475667200", "59.94": "4237833600" };
+
+test("ms to frames and ticks at 23.976, 25, 29.97 and 59.94", () => {
+  assert.equal(sd.fpsOf(TB["23.976"]), 23.976);
+  assert.equal(sd.fpsOf(TB["25"]), 25);
+  assert.equal(sd.fpsOf(TB["29.97"]), 29.97);
+  assert.equal(sd.fpsOf(TB["59.94"]), 59.94);
+  // One second lands on the nearest frame of each rate.
+  assert.equal(sd.msToFrame(1000, TB["23.976"]), 24);
+  assert.equal(sd.msToFrame(1000, TB["25"]), 25);
+  assert.equal(sd.msToFrame(1000, TB["29.97"]), 30);
+  assert.equal(sd.msToFrame(1000, TB["59.94"]), 60);
+  // The frame's start in ticks is exact (these are what Premiere read back).
+  assert.equal(sd.msToTicks(500, TB["23.976"]), "127135008000"); // 12 frames
+  assert.equal(sd.msToTicks(1001, TB["23.976"]), "254270016000"); // 24 frames
+  assert.equal(sd.msToTicks(1000, TB["25"]), "254016000000");
+  assert.equal(sd.msToTicks(1000, TB["29.97"]), "254270016000");
+  assert.equal(sd.msToTicks(1000, TB["59.94"]), "254270016000");
+  // Half a frame rounds to the nearer frame; the frame before 41.708 ms is 0.
+  assert.equal(sd.msToFrame(20, TB["23.976"]), 0);
+  assert.equal(sd.msToFrame(21, TB["23.976"]), 1);
+  // Ten hours at 59.94 stays exact (BigInt ticks).
+  const frames = sd.msToFrame(36000000, TB["59.94"]);
+  assert.equal(frames, 2157842); // 36000 s at 60000/1001
+  assert.equal(sd.frameToTicks(frames, TB["59.94"]), (2157842n * 4237833600n).toString());
+  // And back: ticks to ms and frames.
+  assert.equal(sd.ticksToMs("254270016000"), 1001);
+  assert.equal(sd.ticksToMs("4057725672000"), 15974);
+  assert.equal(sd.ticksToFrame("254270016000", TB["23.976"]), 24);
+  assert.equal(sd.ticksToFrame("254270016001", TB["23.976"], { up: true }), 25);
+  assert.throws(() => sd.frameTicks("0"), sd.SoundDesignError);
+  assert.throws(() => sd.frameTicks("-5"), sd.SoundDesignError);
+});
+
+test("file names from the library are safe on Windows and macOS", () => {
+  const name = (raw) => {
+    const s = sd.safeSoundName(raw);
+    return s.stem + s.ext;
+  };
+  assert.equal(name("NOLGIA Sounds/03 Door slam [fs-123456].wav"), "03 Door slam [fs-123456].wav");
+  // No path traversal: only the last part of any path.
+  assert.equal(name("../../../../Windows/System32/evil.wav"), "evil.wav");
+  assert.equal(name("..\\..\\Users\\me\\AppData\\evil.wav"), "evil.wav");
+  assert.equal(name("/etc/passwd/../x.WAV"), "x.wav");
+  // Characters Windows or macOS refuse, control and invisible characters.
+  assert.equal(name('a<b>c:d"e|f?g*h.wav'), "a_b_c_d_e_f_g_h.wav");
+  assert.equal(name("tab\there\u0000nul.wav"), "tabherenul.wav");
+  assert.equal(name("gnp\u202Ecod.wav"), "gnpcod.wav", "a right-to-left override is dropped");
+  assert.equal(name("zero\u200Bwidth.wav"), "zerowidth.wav");
+  // Windows device names, leading and trailing dots and spaces.
+  assert.equal(name("con.wav"), "_con.wav");
+  assert.equal(name("LPT1.wav"), "_LPT1.wav");
+  assert.equal(name("aux.final.wav"), "_aux.final.wav");
+  assert.equal(name("  .hidden.wav"), "hidden.wav");
+  assert.equal(name("trailing dots... .wav"), "trailing dots.wav");
+  // Letters of any language stay (composed, NFC), emoji do not.
+  assert.equal(name("Cafe\u0301 ambience.wav"), "Café ambience.wav");
+  assert.equal(name("雨の音 rain.wav"), "雨の音 rain.wav");
+  assert.equal(name("boom 💥.wav"), "boom _.wav");
+  // Long names are cut (100 characters, 180 bytes).
+  assert.equal(sd.safeSoundName("x".repeat(400) + ".wav").stem.length, 100);
+  assert.ok(Buffer.byteLength(sd.safeSoundName("雨".repeat(150) + ".wav").stem) <= 180);
+  // Nothing left: the fallback.
+  assert.equal(name("???.wav"), "_.wav");
+  assert.equal(sd.safeSoundName("....wav", "cue 7").stem, "cue 7");
+  // Only sounds.
+  assert.equal(name("loop.WAVE"), "loop.wav");
+  assert.equal(name("hit.aiff"), "hit.aiff");
+  for (const bad of ["virus.exe", "sound.wav.exe", "noext", "", "page.html", "a.flac"]) {
+    assert.throws(() => sd.safeSoundName(bad), sd.SoundDesignError, bad);
+  }
+});
+
+test("names are unique in a folder, whatever their case", () => {
+  const taken = new Set(["door.wav"]);
+  assert.equal(sd.uniqueName("Door", ".wav", taken), "Door (2).wav");
+  assert.equal(sd.uniqueName("door", ".wav", taken), "door (3).wav");
+  assert.equal(sd.uniqueName("Rain", ".wav", taken), "Rain.wav");
+  assert.ok(taken.has("rain.wav"));
+});
+
+test("a sound file must look like the sound its name says", () => {
+  const wav = Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), Buffer.from("WAVEfmt ")]);
+  assert.equal(sd.looksLikeAudio(wav, ".wav"), true);
+  assert.equal(sd.looksLikeAudio(Buffer.from("<!DOCTYPE html><html>"), ".wav"), false);
+  assert.equal(sd.looksLikeAudio(Buffer.from("ID3\u0004\u0000"), ".mp3"), true);
+  assert.equal(sd.looksLikeAudio(Buffer.from([0xff, 0xfb, 0x90, 0x00]), ".mp3"), true);
+  assert.equal(sd.looksLikeAudio(Buffer.concat([Buffer.from("FORM"), Buffer.alloc(4), Buffer.from("AIFF")]), ".aiff"), true);
+  assert.equal(sd.looksLikeAudio(Buffer.concat([Buffer.alloc(4), Buffer.from("ftypM4A ")]), ".m4a"), true);
+  assert.equal(sd.looksLikeAudio(wav, ".mp3"), false);
+});
+
+test("sound_design arguments: actions, run ids and cues", () => {
+  assert.ok(c.capabilitiesFor(PR).includes("sound_design"));
+  assert.ok(!c.capabilitiesFor(APPS.AEFT).includes("sound_design"), "Premiere Pro only");
+  assert.deepEqual(c.validate(PR, "sound_design", { action: "read" }), { action: "read", sequence: null });
+  assert.deepEqual(c.validate(PR, "sound_design", { action: "preview", sequence: "Edit" }), { action: "preview", sequence: "Edit", range: "auto" });
+  assert.deepEqual(c.validate(PR, "sound_design", { action: "remove", run_id: "plan-1" }), { action: "remove", sequence: null, run_id: "plan-1" });
+  assert.throws(() => c.validate(PR, "sound_design", {}), /`action` must be one of: read, preview, place, remove/);
+  assert.throws(() => c.validate(PR, "sound_design", { action: "preview", range: "work_area" }), /`range` must be one of/);
+  assert.throws(() => c.validate(PR, "sound_design", { action: "remove" }), /`run_id` is required/);
+  assert.throws(() => c.validate(PR, "sound_design", { action: "remove", run_id: "../x" }), /`run_id`/);
+  assert.throws(() => c.validate(PR, "sound_design", { action: "place", run_id: "r1" }), /`files` is required/);
+  assert.throws(() => c.validate(PR, "sound_design", { action: "place", run_id: "r1", files: new Array(301).fill({}) }), /at most 300/);
+  assert.throws(() => c.validate(APPS.AEFT, "sound_design", { action: "read" }), /cannot do "sound_design"/);
+
+  const good = {
+    cue_id: "c1", name: "Door slam", file: "NOLGIA Sounds/Door slam.wav", url: "https://cdn.example/a.wav",
+    bytes: 1000, start_ms: 1200, source_in_ms: 0, source_out_ms: 800, gain_db: -6, fade_in_ms: 0, fade_out_ms: 120,
+    role: "sfx", lane: 1, credit: "", licence: "CC0",
+  };
+  const out = c.validate(PR, "sound_design", {
+    action: "place",
+    run_id: "4f8a2c1e-plan",
+    files: [
+      good,
+      Object.assign({}, good, { cue_id: "c2", url: "http://cdn.example/a.wav" }),
+      Object.assign({}, good, { cue_id: "c3", url: "https://me:pw@cdn.example/a.wav" }),
+      Object.assign({}, good, { cue_id: "c4", start_ms: -5 }),
+      Object.assign({}, good, { cue_id: "c5", source_out_ms: 0 }),
+      Object.assign({}, good, { cue_id: "c6", file: "../../evil.exe" }),
+      Object.assign({}, good, { cue_id: "c7", bytes: 400 * 1024 * 1024 }),
+      Object.assign({}, good, { cue_id: "c8", url: undefined }),
+      good,
+      "nonsense",
+      Object.assign({}, good, { cue_id: "c9", role: "laser", lane: 0, gain_db: "loud", source_out_ms: undefined, duration_ms: 2500 }),
+    ],
+    credits: [" Rain by someone (CC BY 4.0) ", "", 7 === 7 ? "Door by another (CC BY 4.0)" : ""],
+  });
+  const byId = Object.fromEntries(out.files.map((f) => [f.cue_id + ":" + f.index, f]));
+  assert.equal(byId["c1:0"].problem, null);
+  assert.deepEqual(byId["c1:0"].safe, { stem: "Door slam", ext: ".wav" });
+  assert.match(byId["c2:1"].problem, /not HTTPS/);
+  assert.match(byId["c3:2"].problem, /user name or password/);
+  assert.match(byId["c4:3"].problem, /start_ms/);
+  assert.match(byId["c5:4"].problem, /ends before it starts/);
+  assert.match(byId["c6:5"].problem, /not a sound file/);
+  assert.match(byId["c7:6"].problem, /400 MB, more than the 300 MB/);
+  assert.match(byId["c8:7"].problem, /no url/);
+  assert.match(byId["c1:8"].problem, /listed twice/);
+  assert.match(byId["10:9"].problem, /not an object/);
+  const c9 = byId["c9:10"];
+  assert.equal(c9.problem, null);
+  assert.equal(c9.role, "sfx");
+  assert.equal(c9.lane, 1);
+  assert.equal(c9.gain_db, 0);
+  assert.equal(c9.source_out_ms, 2500, "the sound's length when source_out_ms is missing");
+  assert.deepEqual(out.credits, ["Rain by someone (CC BY 4.0)", "Door by another (CC BY 4.0)"]);
+});
+
+test("a cue on the frame grid; shorter than a frame is not placed", () => {
+  const f = sd.cueFrames({ start_ms: 500, source_in_ms: 1001, source_out_ms: 3003 }, TB["23.976"]);
+  assert.deepEqual(f, {
+    start: 12, end: 60, length: 48, in: 24,
+    start_ticks: "127135008000", end_ticks: "635675040000", in_ticks: "254270016000", out_ticks: "762810048000",
+  });
+  assert.match(sd.cueFrames({ start_ms: 0, source_in_ms: 0, source_out_ms: 10 }, TB["25"]).reason, /shorter than one frame/);
+});
+
+test("gain is Volume > Level, 10^((dB - 15) / 20), held to -96..+15 dB", () => {
+  // Measured in Premiere Pro 26.2: 0 dB is the value Premiere starts with.
+  assert.equal(sd.levelForGain(0).value.toFixed(8), "0.17782794");
+  assert.equal(sd.levelForGain(-6).value.toFixed(8), "0.08912509");
+  assert.equal(sd.levelForGain(-12).value.toFixed(8), "0.04466836");
+  assert.deepEqual(sd.levelForGain(20), { value: 1, db: 15, clamped: true });
+  assert.equal(sd.levelForGain(-200).db, -96);
+  assert.equal(sd.levelForGain(NaN).db, 0);
+});
+
+test("fades are Level keyframes in media time, shortened to fit", () => {
+  const level = sd.levelForGain(-6).value;
+  // A clip whose media starts at 1.001 s, 2.002 s long, 500 ms fades.
+  const f = sd.fadeKeys({ inSeconds: 1.001, lengthSeconds: 2.002, fadeInMs: 500, fadeOutMs: 500, level });
+  assert.deepEqual(f.keys, [[1.001, 0], [1.501, level], [2.503, level], [3.003, 0]]);
+  assert.equal(f.shortened, false);
+  // Only a fade out: the level holds until it.
+  assert.deepEqual(sd.fadeKeys({ inSeconds: 0, lengthSeconds: 2, fadeInMs: 0, fadeOutMs: 250, level }).keys, [[1.75, level], [2, 0]]);
+  // No fades: no keyframes.
+  assert.deepEqual(sd.fadeKeys({ inSeconds: 0, lengthSeconds: 2, fadeInMs: 0, fadeOutMs: 0, level }).keys, []);
+  // Fades longer than the clip meet in the middle, in proportion.
+  const long = sd.fadeKeys({ inSeconds: 0, lengthSeconds: 1, fadeInMs: 3000, fadeOutMs: 1000, level });
+  assert.equal(long.shortened, true);
+  assert.equal(long.fade_in_ms, 750);
+  assert.equal(long.fade_out_ms, 250);
+  assert.deepEqual(long.keys, [[0, 0], [0.75, level], [1, 0]]);
+});
+
+function cue(id, lane, role, start, end) {
+  return { cue_id: id, index: Number(id.replace(/\D/g, "")) || 0, lane, role, start, end };
+}
+
+test("lanes become new tracks; overlapping sounds get another track", () => {
+  const plan = sd.planTracks(
+    [
+      cue("c1", 1, "sfx", 0, 24),
+      cue("c2", 1, "sfx", 12, 40), // overlaps c1: a second SFX track
+      cue("c3", 1, "sfx", 24, 30), // after c1 ends (end is exclusive): back on the first
+      cue("c4", 2, "ambience", 0, 500),
+      cue("c5", 3, "music", 100, 400),
+      cue("c6", 1, "sfx", 30, 35), // the first again
+    ],
+    { trackNames: ["Audio 1", "Audio 2", "Audio 3"] }
+  );
+  assert.deepEqual(plan.tracks.map((t) => [t.key, t.name, t.lane]), [
+    ["new:0", "NOLGIA SFX 1", 1],
+    ["new:1", "NOLGIA SFX 2", 1],
+    ["new:2", "NOLGIA Ambience", 2],
+    ["new:3", "NOLGIA Music", 3],
+  ]);
+  assert.deepEqual(plan.assign, { c1: "new:0", c2: "new:1", c3: "new:0", c6: "new:0", c4: "new:2", c5: "new:3" });
+});
+
+test("track names never repeat one the sequence has, and a lane names its track after most of its sounds", () => {
+  const plan = sd.planTracks(
+    [cue("c1", 1, "ambience", 0, 10), cue("c2", 1, "ambience", 5, 20), cue("c3", 2, "sfx", 0, 10), cue("c4", 2, "voice", 20, 30), cue("c5", 2, "voice", 40, 50)],
+    { trackNames: ["NOLGIA SFX 1", "nolgia ambience 1", "Audio 1"] }
+  );
+  assert.deepEqual(plan.tracks.map((t) => t.name), ["NOLGIA Ambience 2", "NOLGIA Ambience 3", "NOLGIA Voice"]);
+});
+
+test("a repeated place uses the run's own tracks where they are free, and adds one where they are not", () => {
+  const existing = [
+    { id: 7, name: "NOLGIA SFX 1", lane: 1, role: "sfx", busy: [[0, 24]] },
+    { id: 8, name: "NOLGIA Ambience", lane: 2, role: "ambience", busy: [[0, 500]] },
+  ];
+  const plan = sd.planTracks([cue("c7", 1, "sfx", 30, 40), cue("c8", 1, "sfx", 10, 20), cue("c9", 2, "ambience", 450, 600)], {
+    existing,
+    trackNames: ["Audio 1", "NOLGIA SFX 1", "NOLGIA Ambience"],
+  });
+  assert.equal(plan.assign.c7, "id:7");
+  assert.equal(plan.assign.c8, "new:0", "busy on SFX 1 at that time");
+  assert.equal(plan.assign.c9, "new:1");
+  assert.deepEqual(plan.tracks.map((t) => [t.key, t.name, t.isNew]), [
+    ["id:7", "NOLGIA SFX 1", false],
+    ["new:0", "NOLGIA SFX 2", true],
+    ["new:1", "NOLGIA Ambience 2", true],
+  ]);
+});
+
+test("the run's live tracks: what is on them now; tracks gone, removed or holding the editor's clips left out", () => {
+  const record = sd.newRecord({ runId: "r1", project: "p", sequence: { id: "s", name: "Edit" }, folder: "f", bin: ["b"], now: "t" });
+  record.tracks.push({ id: 7, name: "NOLGIA SFX 1", lane: 1, role: "sfx" });
+  record.tracks.push({ id: 8, name: "NOLGIA Ambience", lane: 2, role: "ambience" });
+  record.tracks.push({ id: 9, name: "NOLGIA SFX 2", lane: 1, role: "sfx", removed_at: "t" });
+  record.tracks.push({ id: 10, name: "NOLGIA SFX 3", lane: 1, role: "sfx" });
+  record.tracks.push({ id: 11, name: "NOLGIA SFX 4", lane: 1, role: "sfx", released_at: "t" });
+  record.cues.c1 = { status: "placed", track_id: 7, node_id: "n5" };
+  const live = sd.liveRunTracks(
+    record,
+    {
+      tracks: [
+        { id: 7, name: "SFX renamed", clips: [{ start: "0", end: "254270016001", node_id: "n5" }] },
+        { id: 9, name: "x", clips: [] },
+        { id: 10, name: "NOLGIA SFX 3", clips: [{ start: "0", end: "10", node_id: "editors-own" }] },
+        { id: 11, name: "NOLGIA SFX 4", clips: [] },
+      ],
+    },
+    TB["23.976"]
+  );
+  assert.deepEqual(live, [{ id: 7, name: "SFX renamed", lane: 1, role: "sfx", busy: [[0, 25]] }]);
+  assert.deepEqual(sd.activeTracks(record).map((x) => x.id), [7, 8, 10]);
+});
+
+test("the record: repeat places nothing twice; remove marks what went out, so the run can go in again", () => {
+  const record = sd.newRecord({ runId: "r1", project: "p", sequence: { id: "s", name: "Edit" }, folder: "f", bin: ["b"], now: "t0" });
+  assert.equal(sd.parseRecord(JSON.parse(JSON.stringify(record)), "r1").run_id, "r1");
+  assert.equal(sd.parseRecord(record, "r2"), null, "another run's record is not this one");
+  assert.equal(sd.parseRecord({ version: 99, run_id: "r1" }, "r1"), null);
+  record.cues.c1 = { status: "placed", track_id: 7 };
+  record.cues.c2 = { status: "placed", track_id: 7 };
+  record.cues.c3 = { status: "removed" };
+  record.tracks.push({ id: 7, name: "NOLGIA SFX 1" });
+  const split = sd.splitRepeat([{ cue_id: "c1" }, { cue_id: "c3" }, { cue_id: "c4" }], record);
+  assert.deepEqual(split.already.map((x) => x.cue_id), ["c1"]);
+  assert.deepEqual(split.todo.map((x) => x.cue_id), ["c3", "c4"]);
+  assert.deepEqual(sd.placedCues(record).map((x) => x.cue_id), ["c1", "c2"]);
+  record.tracks.push({ id: 8, name: "NOLGIA SFX 2" });
+  sd.applyRemoval(record, { removed: ["c1"], missing: ["c2"], tracks_removed: [7], tracks_kept: [{ id: 8, name: "NOLGIA SFX 2" }] }, "t1");
+  assert.equal(record.tracks[1].released_at, "t1", "a kept track is the editor's now");
+  assert.deepEqual(sd.activeTracks(record), []);
+  assert.equal(record.cues.c1.status, "removed");
+  assert.equal(record.cues.c2.status, "removed");
+  assert.match(record.cues.c2.note, /no longer on the timeline/);
+  assert.equal(record.tracks[0].removed_at, "t1");
+  assert.deepEqual(sd.placedCues(record), []);
+  assert.deepEqual(sd.splitRepeat([{ cue_id: "c1" }], record).todo.map((x) => x.cue_id), ["c1"]);
+  assert.equal(record.history[0].action, "remove");
+});
+
+test("the preview: long side 960, the in to out range or all, at most 10 minutes", () => {
+  assert.deepEqual(sd.previewSize(1920, 1080), { width: 960, height: 540 });
+  assert.deepEqual(sd.previewSize(1080, 1920), { width: 540, height: 960 });
+  assert.deepEqual(sd.previewSize(4096, 2160), { width: 960, height: 506 });
+  assert.deepEqual(sd.previewSize(640, 360), { width: 640, height: 360 }, "never larger than the sequence");
+  const tps = 254016000000;
+  const seq = { end: String(120 * tps), in: null, out: null };
+  assert.deepEqual(sd.previewRange(seq, "auto"), { from: "sequence", start_ms: 0, end_ms: 120000, duration_ms: 120000, mode: "entire" });
+  const marked = Object.assign({}, seq, { in: String(10 * tps), out: String(40 * tps) });
+  assert.deepEqual(sd.previewRange(marked, "auto"), { from: "in_out", start_ms: 10000, end_ms: 40000, duration_ms: 30000, mode: "in_out" });
+  assert.equal(sd.previewRange(marked, "sequence").duration_ms, 120000);
+  assert.throws(() => sd.previewRange(seq, "in_out"), /no in and out points/);
+  assert.throws(() => sd.previewRange({ end: String(11 * 60 * tps), in: null, out: null }, "auto"), /at most 10 minutes.*11 min 0 s/);
+  assert.equal(sd.previewRange({ end: String(11 * 60 * tps), in: String(60 * tps), out: String(660 * tps) }, "auto").duration_ms, 600000);
+});
+
+test("the preview preset: Premiere's own H.264 preset with size, frame rate and bit rate written in", () => {
+  const param = (id, value) =>
+    '\t<ExporterParam ObjectID="1" ClassID="x" Version="1">\r\n\t\t<ParamIdentifier>' + id +
+    "</ParamIdentifier>\r\n\t\t<ParamType>2</ParamType>\r\n\t\t<ParamValue>" + value + "</ParamValue>\r\n\t</ExporterParam>\r\n";
+  const xml =
+    '<?xml version="1.0" encoding="UTF-8"?>\r\n<PremiereData Version="3">\r\n' +
+    param("ADBEVideoAspect", "1,1") + param("ADBEVideoWidth", "854") + param("ADBEVideoHeight", "480") +
+    param("ADBEVideoFPS", "8467200000") + param("ADBEVideoTargetBitrate", "0.8") + param("ADBEVideoMaxBitrate", "1.") +
+    "</PremiereData>\r\n";
+  const out = sd.previewPreset(xml, { width: 960, height: 540, timebase: TB["23.976"] });
+  const value = (id) => new RegExp("<ParamIdentifier>" + id + "</ParamIdentifier>[\\s\\S]*?<ParamValue>([^<]*)<").exec(out)[1];
+  assert.equal(value("ADBEVideoWidth"), "960");
+  assert.equal(value("ADBEVideoHeight"), "540");
+  assert.equal(value("ADBEVideoFPS"), "10594584000");
+  assert.equal(value("ADBEVideoTargetBitrate"), "2");
+  assert.equal(value("ADBEVideoMaxBitrate"), "3");
+  assert.equal(value("ADBEVideoAspect"), "1,1", "other settings stay");
+  assert.equal(out.split("\r\n").length, xml.split("\r\n").length, "line endings kept");
+  assert.throws(() => sd.previewPreset("<PremiereData/>", { width: 2, height: 2, timebase: TB["25"] }), /no ADBEVideoWidth/);
+});
+
+test("local sources (tests only) must be full paths without ..", () => {
+  assert.equal(sd.localSourceOk("C:\\sounds\\a.wav"), true);
+  assert.equal(sd.localSourceOk("/Users/me/a.wav"), true);
+  assert.equal(sd.localSourceOk("a.wav"), false);
+  assert.equal(sd.localSourceOk("/Users/me/../../etc/a.wav"), false);
+});

@@ -50,6 +50,7 @@ const ENV_KEYS = [
   "NOLGIA_UPIA",
   "NOLGIA_TRANSCRIPTS_PACKAGE",
   "NOLGIA_UPDATE_CHECK",
+  "NOLGIA_SOUND_DESIGN_LOCAL",
 ];
 
 const TRUE = ["1", "true", "yes", "on"];

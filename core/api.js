@@ -349,12 +349,16 @@ class ApiClient {
   }
 
   // Download a signed URL to destPath (never with the bearer). Resolves the
-  // file's first 64 bytes.
-  async download(url, destPath, { maxBytes = null, redirects = 5 } = {}) {
+  // file's first 64 bytes. `httpsOnly` refuses a link, or a redirect, that
+  // is not HTTPS.
+  async download(url, destPath, { maxBytes = null, redirects = 5, httpsOnly = false } = {}) {
     const tmp = destPath + ".part";
     let current = url;
     try {
       for (let hop = 0; ; hop++) {
+        if (httpsOnly && !/^https:\/\//i.test(current)) {
+          throw new ApiError(400, { title: "Not HTTPS", detail: "The download link is not HTTPS." });
+        }
         const out = fs.createWriteStream(tmp);
         let copied = 0;
         const sink = {

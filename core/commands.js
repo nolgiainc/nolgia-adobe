@@ -13,7 +13,7 @@ const { parseTime, cutText } = require("./util");
 // plugin advertises these in `capabilities`, plus the kinds only some apps
 // have (APP_KINDS).
 const CAPABILITIES = ["info", "run", "preview", "import_asset", "export", "save", "open", "dit"];
-const APP_KINDS = { premiere: ["transcribe"] };
+const APP_KINDS = { premiere: ["transcribe", "sound_design"] };
 
 // The kinds `app` (an entry of index.APPS) advertises.
 function capabilitiesFor(app) {
@@ -242,6 +242,15 @@ function validate(app, kind, args) {
     out.path = strArg(args, "path", { required: true });
   } else if (kind === "transcribe") {
     return validateTranscribe(args);
+  } else if (kind === "sound_design") {
+    // Required here so the other kinds load without it.
+    const sd = require("./sounddesign");
+    try {
+      return sd.validateArgs(args);
+    } catch (e) {
+      if (e instanceof sd.SoundDesignError) throw new CommandError(e.message);
+      throw e;
+    }
   } else if (kind === "dit") {
     // Required here so the app-side kinds above load without it.
     const dit = require("./dit");

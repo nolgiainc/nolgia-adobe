@@ -38,6 +38,7 @@ const { BridgeWorker, Status } = require("./worker");
 const util = require("./util");
 const dit = require("./dit");
 const transcribe = require("./transcribe");
+const soundrun = require("./soundrun");
 const work = require("./work");
 const { AgentChat } = require("./chat");
 const { UpdateCheck } = require("./update");
@@ -1326,6 +1327,12 @@ class Controller {
 
   // A host call with its own time limit (jobs run after their command came
   // back, so there is no command deadline).
+  // Sound design in Premiere Pro (core/soundrun.js): read, preview, place
+  // and remove.
+  async do_sound_design(command, api) {
+    return soundrun.soundDesign(this, command, api, { waitForFile });
+  }
+
   async callHostTimed(kind, args, seconds) {
     let timer = null;
     const late = new Promise((resolve) => {
