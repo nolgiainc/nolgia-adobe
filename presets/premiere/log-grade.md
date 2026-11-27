@@ -98,7 +98,9 @@ the camera from the clip's metadata, and the Lumetri values you read back.
      The path reads back and is saved with the project, yet the picture stays
      as shot, also after the project is opened again, also with Premiere's own
      LUT path written the same way; setting the menus' numbers loads nothing
-     either. Name the clips and exactly what to choose.
+     either. (Premiere saves its own path with a closing null, and a null
+     added to the script's path is dropped, so do not try it.) Name the
+     clips and exactly what to choose.
    - Never both on one clip: a log converted twice comes out crushed and
      oversaturated. Never convert with Contrast, Saturation and the other
      sliders.
