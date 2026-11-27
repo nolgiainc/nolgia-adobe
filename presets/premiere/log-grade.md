@@ -115,8 +115,9 @@ the camera from the clip's metadata, and the Lumetri values you read back.
    qe.project.getActiveSequence();
    q.getVideoTrackAt(0).getItemAt(i).addVideoEffect(
    qe.project.getVideoEffectByName("Lumetri Color"));`. QE's list of a track's
-   items can include the gaps between clips, so pick the QE item whose name is
-   the clip's rather than trusting the same index as the regular DOM.
+   items includes the gaps between clips (items whose `type` is `Empty`), so
+   pick the QE item whose name is the clip's rather than trusting the same
+   index as the regular DOM.
    - Clips converted with an Input LUT (step 3) first: add Lumetri to one clip
      of that camera only. The person picks the conversion LUT in its Basic
      Correction > Input LUT (from the menu, or with Browse), then copies that
@@ -184,22 +185,28 @@ the camera from the clip's metadata, and the Lumetri values you read back.
    - Ask the person to make an adjustment layer (Project panel > New Item >
      Adjustment Layer), put it on an empty track directly above the graded
      clips and stretch it from the first graded clip's start to the last one's
-     end. If a track between them holds clips that were not graded, ask first:
-     the look would land on those too. Add one Lumetri Color to it with QE as
-     in step 4 (if QE cannot, the person's pick in the Lumetri Color panel
-     adds it).
+     end; no script call makes one (find it afterwards as the project item
+     whose `isAdjustmentLayer()` is true). If a track between them holds clips
+     that were not graded, ask first: the look would land on those too. Add
+     one Lumetri Color to it with QE as in step 4 (if QE cannot, the person's
+     pick in the Lumetri Color panel adds it).
    - The person picks the look in that Lumetri Color > Creative > Look,
-     because Premiere's scripting cannot set a LUT. Tell them its exact name
-     (the `lut` from the install result) and the menu. A NOLGIA stock is
-     always the plain one, which expects a finished Rec. 709 picture: what
-     every clip is after its conversion and correction. A LUT of their own
-     must be made for a finished Rec. 709 picture too; one made for a camera
-     log ("for S-Log3") is a conversion and a look in one and does not go
-     here.
+     because Premiere's scripting cannot set a LUT file.
+     (`app.project.applyLumetriPreset(name)` puts one of Premiere's own
+     Lumetri presets on the selected clip, but a `.cube` in the LUT folders,
+     NOLGIA's stocks among them, is not one of those presets.) Tell them its
+     exact name (the `lut` from the install result) and the menu. A NOLGIA
+     stock is always the plain one, which expects a finished Rec. 709
+     picture: what every clip is after its conversion and correction. A LUT
+     of their own must be made for a finished Rec. 709 picture too; one made
+     for a camera log ("for S-Log3") is a conversion and a look in one and
+     does not go here.
    - Strength is that Lumetri's Creative `Intensity`: 100 unless the person
-     asked for less. Set it by name and read it back, or tell the person the
-     number. A lighter strength (75, 50, 30) is the person's named choice after
-     seeing it at 100, never a repair.
+     asked for less. It is the SECOND property named `Intensity`: the first
+     belongs to Basic Correction (default 50) and is not the look's. Set it by
+     name with that count and read it back, or tell the person the number. A
+     lighter strength (75, 50, 30) is the person's named choice after seeing
+     it at 100, never a repair.
    - Nothing is corrected after the look. Lumetri works through its sections
      from the top down, so on the adjustment layer everything other than Look
      and Intensity stays at its default, and Basic Correction on each clip is
