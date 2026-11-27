@@ -241,7 +241,12 @@ the camera from the clip's metadata, and the Lumetri values you read back.
    clip, each at its own frame. Look at each one:
    - skin reads as skin: not orange, grey, green or magenta, and lit rather
      than glowing;
-   - blacks hold detail: dark clothes, hair and shadows are not one flat black;
+   - blacks hold detail: dark clothes, hair and shadows are not one flat black.
+     A look that lifts black (NOLGIA Kodak Portra 400 does) shows a crushed
+     black as one flat dark grey, the look's own darkest value: Lumetri
+     carries a value that Blacks pushed under black through to the look, which
+     maps it to that floor. So judge this one on the still taken again with
+     the look's Intensity at 0, where a crush shows as pure black;
    - highlights hold: white shirts, walls and sky keep their detail, and only
      the sun, lamps, windows and shiny reflections may be pure white;
    - no large part of the frame is pure white;
