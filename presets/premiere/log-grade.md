@@ -69,7 +69,10 @@ the camera from the clip's metadata, and the Lumetri values you read back.
      management is converting it. Nothing more is needed, and the clip's
      Input LUT stays empty.
    - When it reports Rec. 709 (or another display space) for footage that
-     looks grey and flat, Premiere does not see the log. Ask the person to set
+     looks grey and flat, Premiere does not see the log. Turning on the
+     project's log colour management by script
+     (`app.project.setLogColorManagement(true)`) does not change that: Canon
+     Log 3 clips still report Rec. 709 after it. Ask the person to set
      the colour space of ONE clip of that camera to the camera's log, which is
      preferred: select the clip in the Project panel, Clip > Modify > Color,
      and choose the log in Override Media Color Space (Adobe's help also puts
@@ -92,7 +95,10 @@ the camera from the clip's metadata, and the Lumetri values you read back.
    - Scripting cannot make the first choice for the person: it can only copy
      a colour space it read from a clip, and an Input LUT or Look set from
      script takes the value but nothing renders (tested in Premiere Pro 26.2).
-     Name the clips and exactly what to choose.
+     The path reads back and is saved with the project, yet the picture stays
+     as shot, also after the project is opened again, also with Premiere's own
+     LUT path written the same way; setting the menus' numbers loads nothing
+     either. Name the clips and exactly what to choose.
    - Never both on one clip: a log converted twice comes out crushed and
      oversaturated. Never convert with Contrast, Saturation and the other
      sliders.
@@ -129,7 +135,10 @@ the camera from the clip's metadata, and the Lumetri values you read back.
      (Build step 1), say so, and ask whether the look should go over them.
    - Read each clip's `trackItem.components` from the regular DOM: every
      graded clip has exactly one component whose `displayName` is `Lumetri
-     Color`.
+     Color`. Where a clip has two, they apply in the reverse of their order
+     in `components`: the one with the higher index runs first. A Lumetri
+     preset applied to a clip that already has a Lumetri Color adds a second
+     one at the lower index, so it runs after the clip's own.
 5. **The hero of each scene first.** Take a still of the hero on the copy at
    its frame: this is the converted picture before any correction. Set Basic
    Correction values by name, not by index: walk the Lumetri component's
@@ -194,7 +203,9 @@ the camera from the clip's metadata, and the Lumetri values you read back.
      because Premiere's scripting cannot set a LUT file.
      (`app.project.applyLumetriPreset(name)` puts one of Premiere's own
      Lumetri presets on the selected clip, but a `.cube` in the LUT folders,
-     NOLGIA's stocks among them, is not one of those presets.) Tell them its
+     NOLGIA's stocks among them, is not one of those presets, by name, file
+     name or path. Nor is a preset in the person's own effect presets file:
+     it finds only the presets Premiere installs.) Tell them its
      exact name (the `lut` from the install result) and the menu. A NOLGIA
      stock is always the plain one, which expects a finished Rec. 709
      picture: what every clip is after its conversion and correction. A LUT
