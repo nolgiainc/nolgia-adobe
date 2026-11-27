@@ -72,35 +72,44 @@ the camera from the clip's metadata, and the Lumetri values you read back.
      looks grey and flat, Premiere does not see the log. Turning on the
      project's log colour management by script
      (`app.project.setLogColorManagement(true)`) does not change that: Canon
-     Log 3 clips still report Rec. 709 after it. Ask the person to set
-     the colour space of ONE clip of that camera to the camera's log, which is
-     preferred: select the clip in the Project panel, Clip > Modify > Color,
-     and choose the log in Override Media Color Space (Adobe's help also puts
-     it in the Lumetri Color panel's Settings tab, under Source Clip). Say that
-     this changes how the clip looks everywhere in the project, as correct
-     colour management should. Then copy it to the other clips of that camera
-     yourself: `other.setOverrideColorSpace(first.getColorSpace())` on each
-     project item, and read `getColorSpace()` back. A script cannot name a
-     colour space (`ColorSpace` has no constructor and
-     `setOverrideColorSpace` refuses a name), so the person's one pick is what
-     you copy. Take each clip's still again: one that still looks flat is the
-     person's to set too. Only if Premiere offers no such choice for that
-     camera: a conversion LUT from the camera's maker (log to Rec. 709,
-     nothing else; one the person has or gets from the maker, since NOLGIA
-     never ships it) in Lumetri Color > Basic Correction > Input LUT, picked
-     by the person in step 4. Never a LUT that also carries a look, and never
-     NOLGIA's log versions of a stock (`<slug>-slog3`, `-logc3`, `-vlog`,
-     `-bmdfilm5`): they hold the conversion and the look in one LUT, so every
-     correction would land after the look.
-   - Scripting cannot make the first choice for the person: it can only copy
-     a colour space it read from a clip, and an Input LUT or Look set from
-     script takes the value but nothing renders (tested in Premiere Pro 26.2).
-     The path reads back and is saved with the project, yet the picture stays
-     as shot, also after the project is opened again, also with Premiere's own
-     LUT path written the same way; setting the menus' numbers loads nothing
-     either. (Premiere saves its own path with a closing null, and a null
-     added to the script's path is dropped, so do not try it.) Name the
-     clips and exactly what to choose.
+     Log 3 clips still report Rec. 709 after it. Set the clip's colour space
+     yourself instead. Each project item offers Premiere's own list:
+     `item.getOverrideColorSpaceList` (a property, not a call) holds
+     `ColorSpace` objects with a `name`, among them `Canon Log3/Cinema Gamut`,
+     `Sony S-Log3/S-Gamut3.Cine`, `Panasonic V-Log/V-Gamut` and
+     `ARRI LogC3/Wide Gamut3` (32 in Premiere Pro 26.2). Pick the entry whose
+     `name` matches the camera's log exactly, call
+     `item.setOverrideColorSpace(entry)` on every clip of that camera, and
+     read `getColorSpace().name` back. It renders at once (tested: Canon Log 3
+     clips went from flat to a converted picture), and
+     `item.setOverrideColorSpace(item.getOriginalColorSpace())` undoes it.
+     `setOverrideColorSpace` refuses a name as a string: pass the object from
+     the list. Say that this changes how the clip looks everywhere in the
+     project, as correct colour management should. Take each clip's still
+     again: one that still looks flat, or a camera whose log is not in the
+     list, is the person's to set: select the clip in the Project panel,
+     Clip > Modify > Color, Override Media Color Space. Only if Premiere offers
+     no such choice for that camera: a conversion LUT from the camera's maker
+     (log to Rec. 709, nothing else; one the person has or gets from the
+     maker, since NOLGIA never ships it) in Lumetri Color > Basic Correction >
+     Input LUT, picked by the person in step 4. Never a LUT that also carries
+     a look, and never NOLGIA's log versions of a stock (`<slug>-slog3`,
+     `-logc3`, `-vlog`, `-bmdfilm5`): they hold the conversion and the look in
+     one LUT, so every correction would land after the look.
+   - What Lumetri then works on: read the copy's
+     `sequence.getSettings().workingColorSpace`. In Premiere's default
+     (`Rec. 709`, `isSceneReferred` false, with `autoToneMapEnabled` true)
+     the log is converted and tone mapped into that Rec. 709 space before any
+     effect, so Lumetri's Exposure and Contrast work on the tone mapped
+     picture, not on the log. Say so when you report the values.
+   - An Input LUT or Look set from script takes the value but nothing renders
+     (tested in Premiere Pro 26.2). The path reads back and is saved with the
+     project, yet the picture stays as shot, also after the project is opened
+     again, also with Premiere's own LUT path written the same way; setting
+     the menus' numbers loads nothing either. (Premiere saves its own path
+     with a closing null, and a null added to the script's path is dropped,
+     so do not try it.) A LUT is the person's pick: name the clips and
+     exactly what to choose.
    - Never both on one clip: a log converted twice comes out crushed and
      oversaturated. Never convert with Contrast, Saturation and the other
      sliders.
@@ -111,8 +120,8 @@ the camera from the clip's metadata, and the Lumetri values you read back.
    The plugin puts the `.cube` in the person's own Adobe LUT folder, under
    `Creative`, and the result names the LUT and its menu (Lumetri Color >
    Creative > Look). Premiere reads its LUT folders only when it starts, so ask
-   the person to save, quit and reopen Premiere once they have made the colour
-   space changes above, then call `nolgia_app_status` again before going on.
+   the person to save, quit and reopen Premiere once the colour space changes
+   above are made, then call `nolgia_app_status` again before going on.
    With an older plugin `color_preset` is refused: download the `.cube`, and in
    step 7 the person picks it with Browse in the Creative > Look menu.
 4. **Copy the sequence and add Lumetri, one per clip.** Duplicate the person's
