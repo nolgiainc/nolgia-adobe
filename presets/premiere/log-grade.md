@@ -49,10 +49,12 @@ the camera from the clip's metadata, and the Lumetri values you read back.
    `displayName` is `Lumetri Color`), and from its project item
    `getColorSpace()` (`name`, `transferCharacteristic`, `primaries`), the
    camera from `getXMPMetadata()`, and any sidecar file next to the clip that
-   names the picture profile or gamma (some cameras write one per clip). Say
-   per camera what you found. The steps assume a Rec. 709 sequence, Premiere's
-   usual one; if the person grades for HDR, stop and say this workflow does not
-   cover it.
+   names the picture profile or gamma (some cameras write one per clip). Many
+   files name no camera at all in their XMP (a Canon XF-HEVC `.MP4` holds only
+   dates, length and timecode there): then the clips do not say, and you ask
+   (Ask 4). Say per camera what you found. The steps assume a Rec. 709
+   sequence, Premiere's usual one; if the person grades for HDR, stop and say
+   this workflow does not cover it.
 2. **The before stills, then a plan.** Before anything changes,
    `nolgia_app_preview` with the person's `sequence` and a `frame` inside each
    clip (its middle, or where its subject is clearest). Keep each frame number:
@@ -68,21 +70,29 @@ the camera from the clip's metadata, and the Lumetri values you read back.
      Input LUT stays empty.
    - When it reports Rec. 709 (or another display space) for footage that
      looks grey and flat, Premiere does not see the log. Ask the person to set
-     the clip's colour space to the camera's log in Premiere (Modify >
-     Interpret Footage, colour management), which is preferred. Say that this
-     changes how the clip looks everywhere in the project, as correct colour
-     management should. Only if Premiere offers no such choice for that camera:
-     a conversion LUT from the camera's maker (log to Rec. 709, nothing else;
-     one the person has or gets from the maker, since NOLGIA never ships it)
-     in Lumetri Color > Basic Correction > Input LUT, picked by the person in
-     step 4. Never a LUT that also carries a look, and never NOLGIA's log
-     versions of a stock (`<slug>-slog3`, `-logc3`, `-vlog`, `-bmdfilm5`):
-     they hold the conversion and the look in one LUT, so every correction
-     would land after the look.
-   - Scripting cannot do either for the person: the documented script calls
-     only read a clip's colour space (`getColorSpace()`), and an Input LUT or
-     Look set from script takes the value but nothing renders (tested in
-     Premiere Pro 26.2). Name the clips and exactly what to choose.
+     the colour space of ONE clip of that camera to the camera's log, which is
+     preferred: select the clip in the Project panel, Clip > Modify > Color,
+     and choose the log in Override Media Color Space (Adobe's help also puts
+     it in the Lumetri Color panel's Settings tab, under Source Clip). Say that
+     this changes how the clip looks everywhere in the project, as correct
+     colour management should. Then copy it to the other clips of that camera
+     yourself: `other.setOverrideColorSpace(first.getColorSpace())` on each
+     project item, and read `getColorSpace()` back. A script cannot name a
+     colour space (`ColorSpace` has no constructor and
+     `setOverrideColorSpace` refuses a name), so the person's one pick is what
+     you copy. Take each clip's still again: one that still looks flat is the
+     person's to set too. Only if Premiere offers no such choice for that
+     camera: a conversion LUT from the camera's maker (log to Rec. 709,
+     nothing else; one the person has or gets from the maker, since NOLGIA
+     never ships it) in Lumetri Color > Basic Correction > Input LUT, picked
+     by the person in step 4. Never a LUT that also carries a look, and never
+     NOLGIA's log versions of a stock (`<slug>-slog3`, `-logc3`, `-vlog`,
+     `-bmdfilm5`): they hold the conversion and the look in one LUT, so every
+     correction would land after the look.
+   - Scripting cannot make the first choice for the person: it can only copy
+     a colour space it read from a clip, and an Input LUT or Look set from
+     script takes the value but nothing renders (tested in Premiere Pro 26.2).
+     Name the clips and exactly what to choose.
    - Never both on one clip: a log converted twice comes out crushed and
      oversaturated. Never convert with Contrast, Saturation and the other
      sliders.
