@@ -38,6 +38,7 @@ const { BridgeWorker, Status } = require("./worker");
 const util = require("./util");
 const dit = require("./dit");
 const transcribe = require("./transcribe");
+const soundrun = require("./soundrun");
 const work = require("./work");
 const { AgentChat } = require("./chat");
 const { UpdateCheck } = require("./update");
@@ -280,7 +281,45 @@ class Controller {
       chat: this.signedIn ? this.chat.view() : null,
       chat_blocker: this.chatBlocker(),
       chat_accepted: this.chatAccepted,
+      sound_design_open: this.soundDesignOpen(),
     };
+  }
+
+  // Sound design is staff only while NOLGIA's Sound Library is closed, so the
+  // panel's one-click starter shows only for an account NOLGIA serves it to
+  // (only show options that work). nolgia-api decides it (its switch, or an
+  // admin email; nolgia.ai's soundLibraryOpenTo is the same rule): asked once
+  // per sign in with the cheapest read-only call it gates, GET /sounds/library
+  // for one sound (free): 200 is open, 404 closed. Anything else hides the
+  // starter and asks again in 10 minutes; nothing is ever shown as an error.
+  soundDesignOpen() {
+    if (this.app.app !== "premiere" || !this.signedIn) return false;
+    const token = this.token();
+    const known = this.soundAccess;
+    if (!known || known.token !== token || (!known.checking && known.retryAt && this.clock() >= known.retryAt)) {
+      this.checkSoundDesignAccess(token);
+    }
+    return Boolean(this.soundAccess && this.soundAccess.open);
+  }
+
+  checkSoundDesignAccess(token) {
+    const check = { token, open: false, checking: true, retryAt: 0 };
+    this.soundAccess = check;
+    const api = new ApiClient({ baseUrl: this.apiUrl(), token, userAgent: this.userAgent() });
+    api
+      .request("GET", "/sounds/library", undefined, { query: { page_size: "1" }, timeout: 15 })
+      .then(() => {
+        check.open = true;
+      })
+      .catch((err) => {
+        check.open = false;
+        const settled = err && (err.status === 404 || err.status === 401 || err.status === 403);
+        check.retryAt = settled ? 0 : this.clock() + 600;
+      })
+      .finally(() => {
+        check.checking = false;
+        if (this.soundAccess === check) this.bump();
+      });
   }
 
   statusLine() {
@@ -523,7 +562,7 @@ class Controller {
     } else if (kind === "clear_activity") {
       this.activity.clear();
     } else if (kind === "chat_send") {
-      this.chatSend(msg.text, msg.seq);
+      this.chatSend(msg.text, msg.seq, msg.preset);
     } else if (kind === "chat_stop") {
       this.chat.stop();
     } else if (kind === "chat_new") {
@@ -545,9 +584,9 @@ class Controller {
   // A message from the panel's box. `seq` is the panel's own count: once
   // NOLGIA takes the message, state().chat_accepted says so and the panel
   // clears the box (a message NOLGIA did not take stays in it).
-  chatSend(text, seq) {
+  chatSend(text, seq, preset = null) {
     if (this.chatBlocker() || this.chat.busy) return;
-    this.chat.send(String(text || "")).then((sent) => {
+    this.chat.send(String(text || ""), { preset: typeof preset === "string" ? preset : null }).then((sent) => {
       if (sent && Number.isFinite(Number(seq))) {
         this.chatAccepted = Number(seq);
         this.bump();
@@ -1326,6 +1365,12 @@ class Controller {
 
   // A host call with its own time limit (jobs run after their command came
   // back, so there is no command deadline).
+  // Sound design in Premiere Pro (core/soundrun.js): read, preview, place
+  // and remove.
+  async do_sound_design(command, api) {
+    return soundrun.soundDesign(this, command, api, { waitForFile });
+  }
+
   async callHostTimed(kind, args, seconds) {
     let timer = null;
     const late = new Promise((resolve) => {

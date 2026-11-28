@@ -88,6 +88,55 @@ test("a chat's name on nolgia.ai says which app it came from", () => {
   assert.ok(sessionName("x".repeat(200), "After Effects").length <= 80);
 });
 
+test("a workflow's starter starts a chat under that workflow; a workflow NOLGIA refuses sends nothing", async () => {
+  const o = owner();
+  const chat = newChat(o);
+  await chat.start();
+  assert.equal(await chat.send("Do the sound design.", { preset: "premiere-sound-design" }), true);
+  const st = await support.state(server);
+  assert.deepEqual(st.agent_creates, [
+    { preset_slug: "premiere-sound-design", name: "Premiere Pro: Do the sound design.", app: { app: "premiere", instance_id: "unit-instance" } },
+  ]);
+  chat.reset({ forget: true });
+
+  // A workflow that is not published is refused with 400: no chat, no message, said plainly.
+  const o2 = owner({ instanceId: "unit-instance-2" });
+  const realApi = o2.api;
+  const bodies = [];
+  const submits = [];
+  o2.api = () => {
+    const api = realApi();
+    const create = api.createAgentSession.bind(api);
+    api.createAgentSession = async (body) => {
+      bodies.push(body);
+      if (body.preset_slug) {
+        const { ApiError } = require("../core/api");
+        throw new ApiError(400, { title: "Bad Request", detail: "preset_slug must name a public preset" });
+      }
+      return create(body);
+    };
+    const submit = api.submitAgentMessage.bind(api);
+    api.submitAgentMessage = async (body) => {
+      submits.push(body);
+      return submit(body);
+    };
+    return api;
+  };
+  const chat2 = newChat(o2);
+  await chat2.start();
+  assert.equal(await chat2.send("Do the sound design.", { preset: "premiere-sound-design" }), false);
+  assert.deepEqual(bodies.map((b) => Boolean(b.preset_slug)), [true]);
+  assert.deepEqual(submits, []);
+  assert.equal(chat2.view().busy, false);
+  assert.match(chat2.view().notice.text, /not on NOLGIA yet, so nothing was sent and nothing was charged/);
+  // A slug that is not a slug is never sent either.
+  const chat3 = newChat(owner({ instanceId: "unit-instance-3" }));
+  await chat3.start();
+  assert.equal(await chat3.send("Hello", { preset: "../x" }), false);
+  const st3 = await support.state(server);
+  assert.equal(st3.agent_creates.length, 1);
+});
+
 test("times sort to the microsecond, whatever their fraction", () => {
   const order = ["2026-10-29T00:15:01Z", "2026-10-29T00:15:01.000001Z", "2026-10-29T00:15:01.5Z", "2026-10-29T00:15:02Z"];
   assert.deepEqual(order.slice().sort((a, b) => (timeKey(a) < timeKey(b) ? -1 : 1)), order);

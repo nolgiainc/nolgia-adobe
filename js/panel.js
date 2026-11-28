@@ -321,9 +321,12 @@
   // ------------------------------------------------------------------ chat
 
   // What the chat suggests before the first message: things this plugin and
-  // NOLGIA's workflows for the app do. A click puts one in the box.
+  // NOLGIA's workflows for the app do. A click puts one in the box; a
+  // workflow's starter (`preset`) first says what it will do and what a turn
+  // costs, and Start sends it in a new chat under that workflow.
   const EXAMPLES = {
     premiere: [
+      { text: "Do the sound design.", preset: "premiere-sound-design" },
       "Put my newest NOLGIA clip at the end of my timeline.",
       "Sort the clips in my project into bins by camera and scene.",
       "Install the Kodak Portra 400 look so I can pick it in Lumetri Color.",
@@ -358,6 +361,14 @@
   function openLink(url) {
     if (/^https:\/\//.test(String(url || ""))) CEP.openURL(url);
   }
+
+  // What a workflow's starter says before anything is sent.
+  const STARTERS = {
+    "premiere-sound-design":
+      "NOLGIA Agent reads this sequence, makes a small preview of it, and tells you the price of the plan before " +
+      "anything is charged: 2 credits per started minute of video. Then it shows the sounds it picked and asks " +
+      "before putting them on new audio tracks. Nothing already on the timeline changes.",
+  };
 
   function chatState() {
     return (state && state.chat) || null;
@@ -394,22 +405,56 @@
   });
   input.addEventListener("focus", () => send("chat_wake"));
 
-  function renderExamples(app) {
-    if (shownExamples === app) return;
-    shownExamples = app;
+  // Starters for workflows not every account has: shown only when the
+  // plugin's check says this account can use it (state.sound_design_open:
+  // sound design is staff only while NOLGIA's Sound Library is closed).
+  const STARTER_ACCESS = { "premiere-sound-design": "sound_design_open" };
+
+  function renderExamples(app, s) {
+    const open = Object.keys(STARTER_ACCESS).filter((p) => s && s[STARTER_ACCESS[p]]).join(",");
+    const key = app + "|" + open;
+    if (shownExamples === key) return;
+    shownExamples = key;
     const box = $("chat-examples");
     box.textContent = "";
-    for (const text of EXAMPLES[app] || []) {
-      box.appendChild(
-        el("div", {
-          class: "example",
-          text,
-          onclick: () => {
-            input.value = text;
-            input.focus();
-          },
-        })
-      );
+    for (const example of EXAMPLES[app] || []) {
+      const text = typeof example === "string" ? example : example.text;
+      const preset = typeof example === "string" ? null : example.preset;
+      if (preset && STARTER_ACCESS[preset] && !(s && s[STARTER_ACCESS[preset]])) continue;
+      const node = el("div", { class: preset ? "example starter" : "example", text });
+      node.addEventListener("click", () => {
+        if (!preset) {
+          input.value = text;
+          input.focus();
+          return;
+        }
+        const open = box.querySelector(".starter-confirm");
+        if (open) {
+          open.remove();
+          return;
+        }
+        const view = chatState();
+        const confirm = el("div", { class: "starter-confirm" }, [
+          el("div", { text: STARTERS[preset] || text }),
+          el("div", { class: "cost", text: (view && view.costLine) || "" }),
+          el("div", { class: "row chat-buttons" }, [
+            button("Cancel", () => confirm.remove(), "small"),
+            button(
+              "Start",
+              () => {
+                const now = chatState();
+                if (!now || state.chat_blocker || now.busy) return;
+                confirm.remove();
+                followNext = true;
+                send("chat_send", { text, preset });
+              },
+              "small primary"
+            ),
+          ]),
+        ]);
+        node.after(confirm);
+      });
+      box.appendChild(node);
     }
   }
 
@@ -499,7 +544,7 @@
     if (!view || !s.signed_in || s.login) return;
     const blocker = s.chat_blocker;
     $("chat-lead").textContent = "Tell NOLGIA Agent what to do in this " + s.app_name + ". It works right here.";
-    renderExamples(s.app);
+    renderExamples(s.app, s);
     input.placeholder = "Ask NOLGIA Agent to make or change something in " + s.app_name;
     showIf($("chat-intro"), view.empty && (view.loaded || Boolean(blocker)));
     showIf($("chat-new"), !view.empty);

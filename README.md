@@ -29,11 +29,11 @@ switches. Closing the panel does not disconnect.
    Adobe's own installer. On Windows:
 
    ```bat
-   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.3.1.zxp
+   "C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe" /install nolgia-adobe-0.4.0.zxp
    ```
 
    On macOS the same tool is
-   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.3.1.zxp`.
+   `/Library/Application Support/Adobe/Adobe Desktop Common/RemoteComponents/UPI/UnifiedPluginInstallerAgent/UnifiedPluginInstallerAgent.app/Contents/MacOS/UnifiedPluginInstallerAgent --install nolgia-adobe-0.4.0.zxp`.
    The installer skips a version that is already installed: to reinstall the
    same version, remove it first (`/remove NOLGIA`). The package is signed, so
    no debug setting is needed.
@@ -78,7 +78,13 @@ same chats as nolgia.ai/agent. It works the same way as the chat in NOLGIA for
 Photoshop.
 
 - **Suggestions:** before your first message it suggests a few things to ask
-  in this app. A click puts one in the box.
+  in this app. A click puts one in the box. In Premiere Pro the first one,
+  "Do the sound design.", is a workflow's starter (marked with an orange
+  edge): a click says what it will do and what a turn costs, and Start sends
+  it in a new chat under the "Do the sound design in Premiere Pro" workflow
+  (`preset_slug: premiere-sound-design` on `POST /agent/sessions`). While
+  NOLGIA has not published that workflow the API refuses the slug: nothing is
+  sent, nothing is charged, and the card says so.
 - **Pinned to this app:** your first message starts a chat pinned to this app
   (`app` on `POST /agent/sessions`: `after_effects`, `premiere` or
   `illustrator`, and the `instance_id` its connection runs under). So every
@@ -117,7 +123,7 @@ The chat uses the sign in the panel already has; it asks for nothing new.
 ## What your agent can do
 
 Every app takes the command kinds in the table; Premiere Pro also takes
-`transcribe` (below). Frames count from 0 at the start of the comp or
+`transcribe` and `sound_design` (below). Frames count from 0 at the start of the comp or
 sequence; artboards count from 1.
 
 | Command | After Effects | Premiere Pro | Illustrator |
@@ -205,6 +211,135 @@ clips in the project, so an agent can cut on what people say.
   `action: "status"` or stop it with `action: "cancel"`.
 - **Workflow:** "Cut a behind-the-scenes edit in Premiere Pro"
   (`presets/premiere/bts-cut.md`) cuts on whole sentences with it.
+
+**Sound design in Premiere Pro (`sound_design`).** NOLGIA watches the cut
+and writes a cue sheet with sounds from NOLGIA's Sound Library; this command
+is the part inside Premiere Pro: it reads the sequence, makes the preview
+NOLGIA watches, and puts the chosen sounds into the project on new audio
+tracks, without touching anything the editor made, with a clean way to take
+them out again. `action` is one of:
+
+- **`read`** (`sequence?`, default the active one): the sequence (`name`,
+  `id`, `fps`, `timebase_ticks`, size, `duration_ms`, `frames`, `in_ms` and
+  `out_ms` or null), every video and audio track (`track` "V1"/"A1", `id`,
+  `name`, `locked`, `muted`, `empty`) with its clips (`name`, `start_ms`,
+  `end_ms`, `in_ms`, `out_ms`, `start_frame`, `end_frame`, `media_path`,
+  `enabled`, `kind` for nested sequences, adjustment layers and graphics),
+  `empty_audio_tracks`, `markers` (`name`, `start_ms`, `end_ms`, `type`,
+  `comment`) and `nolgia_runs` (the sound design runs on this sequence; their
+  tracks carry `nolgia_run`). At most 3000 clips are listed (`truncated`).
+- **`preview`** (`sequence?`, `range`: `auto` (default: the in to out range
+  when one is marked, else the whole sequence), `sequence` or `in_out`): an
+  H.264 MP4 with the sequence's sound, the long side 960 px, 2 Mbps, at the
+  sequence's frame rate, uploaded to your NOLGIA library: `{asset_id,
+  filename, bytes, sequence, range: {from, start_ms, end_ms, duration_ms},
+  timeline_offset_ms, width, height, fps}`. `timeline_offset_ms` is where the
+  preview starts on the timeline, for the package's `timeline_offset_ms`.
+  Premiere has no preset of that size, so the plugin copies its own "Mobile
+  Device 480p SD Wide" H.264 preset and writes the size, frame rate and bit
+  rate into the copy. NOLGIA plans at most 10 minutes: a longer range is
+  refused with what to do (mark an in and an out around up to 10 minutes).
+- **`place`** (`plan_id`, `sequence?`, `run_id?`, `timeline_offset_ms?`,
+  `picks?`, `skip?`, `overrides?`): puts a finished plan's sounds in. The
+  plugin asks NOLGIA for the plan's sounds itself, with its own sign-in
+  (`POST /sound-designs/plans/{plan_id}/package`, format `manifest`, with
+  the agent's `timeline_offset_ms`, `picks` and `skip`). While NOLGIA is
+  still making some sounds, the route works on them for up to 100 s and
+  then answers 503 (`sound_design_package_preparing`, Retry-After 30): the
+  plugin asks again, giving every request at least those 100 s plus a
+  margin, all within one limit (the command's time less what placing
+  needs); when that runs out it says "NOLGIA is still preparing the sounds.
+  Try again in a minute; nothing was placed." The agent never hands it a
+  link. `overrides` changes where and how loud a cue goes, by cue id:
+  `start_ms`, `gain_db`, `fade_in_ms`, `fade_out_ms`, `lane`, nothing else.
+  `run_id` is the plan id unless given.
+  - One clock: every time the agent sends (an override's `start_ms`) or is
+    told (a placed cue's `start_ms`, `end_ms`) is in the planned video's
+    time, the same as the cue sheet's. The plugin adds `timeline_offset_ms`
+    (the preview's start in the sequence) itself; the answer also gives
+    `timeline_start_ms`, where the sound sits in the sequence.
+  - Only the links in NOLGIA's answer are downloaded, and only from the
+    storage NOLGIA signs them on (`storage.googleapis.com`; the setting
+    `NOLGIA_SOUND_DOWNLOAD_HOSTS` replaces that list): HTTPS only, never with
+    NOLGIA's sign-in, redirects only within the same host and port and never
+    to a link with a user name, one time limit per file, a failure reported
+    by its status code alone (at most 300 MB a file, 2 GB a run, 300
+    sounds). Every number in NOLGIA's answer and in `overrides` has a bound
+    (times within 24 hours, fades within 10 minutes), and a sound that would
+    start more than 5 s after the sequence ends is not placed. The sounds go
+    into `NOLGIA Sounds/<run_id>` next to the project, under names made safe
+    for Windows and macOS (only the last part of the name, no characters
+    either refuses, no device names such as CON, no leading dots, at most
+    100 characters; the same link once; never onto a file that is there),
+    and each must start like the sound its name says (a web page saved as
+    `.wav` is refused). A project that was never saved is refused: save it
+    first.
+  - Before anything in the project changes, a byte copy of the project file
+    as you last saved it goes into `NOLGIA backups` next to it, and only then
+    is the project saved in place (checked to be the same project); when it
+    had unsaved changes, that save is copied too, so the backups hold the
+    project exactly as it was before NOLGIA's change. If another project is
+    opened while the sounds download, nothing is changed. If a place fails
+    after it changed something, the error says whether the project was saved
+    and where the backup is.
+  - **Undo:** Premiere's scripting has no undo group, so a place is many
+    steps in Edit > Undo (Ctrl+Z, Cmd+Z on a Mac), one per track, clip,
+    level and keyframe, not one. To take a run out, ask for `remove` (or
+    open the backup); do not count on Ctrl+Z.
+  - The sounds are imported into their own bin (`NOLGIA imports / Sound
+    design / <date> <run>`), each as one clip (a stereo file stays one
+    stereo clip whatever the Default Audio Tracks preference says; only the
+    items the run places are changed, never anything else in the bin), and
+    placed frame exact on NEW audio tracks after all others: one per role,
+    then per `lane` ("NOLGIA SFX 1", "NOLGIA Ambience", "NOLGIA Music",
+    "NOLGIA Voice", never a name the sequence has; NOLGIA's lanes are shared
+    by all roles, so an effect never lands on the ambience track), and
+    another where sounds would overlap. A sound never goes on a track with
+    clips on it that this run did not place. Gain is the clip's Volume >
+    Level (Premiere's value is 10^((dB - 15) / 20); -96 to +15 dB, and above
+    the +6 dB the Effect Controls slider stops at: +12 dB measured +12),
+    fades are Level keyframes from silence (Premiere times a clip's
+    keyframes from the start of its media). A mono sound plays centred on
+    the stereo track, 3 dB lower on each side (Premiere's pan law).
+  - Time is kept for the Premiere side (60 s plus 1 s a sound): downloads
+    stop while that much is left, and the rest is placed by placing again.
+    The new tracks (by name, with the ids of the tracks the sequence had)
+    and each sound are written to the record as pending before Premiere is
+    asked, so a place whose answer comes too late is settled by the next
+    place or taken out by `remove`. A pending track is settled only on a
+    track of its name with an id the sequence did not have, and only when
+    it is empty or holds nothing but this run's sounds; a track of that name
+    with anything else on it is never taken as NOLGIA's (it stays, and
+    `remove` names it in `tracks_kept`). New tracks are told from the
+    sequence's own by id, never by their place; when adding them fails,
+    Premiere takes out the empty ones with a new id, never a track the
+    sequence had, and the error says which NOLGIA tracks, if any, are left.
+  - The answer has per cue `status` (`placed`, `already_placed`,
+    `not_placed` with the plain `reason`), NOLGIA's `warnings`, the new
+    `tracks`, `folder`, `bin`, `backup` (and `backup_as_last_saved`),
+    `saved`, `credits` (also written to `CREDITS.txt` in the folder: the
+    lines CC BY sounds require), and `record`: `placement.json` beside the
+    sounds, what the run placed (sequence, tracks, clips; never the download
+    links).
+  - The same run placed again places nothing twice: sounds already placed
+    are `already_placed`; sounds that failed before are placed now.
+- **`remove`** (`run_id`): takes out exactly the clips the run placed: a
+  clip goes only when its track (the one NOLGIA added, still with the name
+  NOLGIA gave it), its start, its end, its in point and its file all agree
+  with the record, checked again in Premiere just before. Premiere's clip
+  ids are not used to find them (they are not kept when a project is opened
+  again). A sound the editor moved, trimmed at either end or slipped, or one
+  on a track the editor renamed, is left in the sequence and listed by name
+  in `left`. The run's tracks go once they are empty, still carry their
+  name, and Premiere's track list agrees; a NOLGIA track the editor put
+  clips on or renamed stays (and is the editor's from then on). The project
+  is backed up and saved first. The files and the bin stay. The run can be
+  placed again afterwards.
+- **Workflow:** "Do the sound design in Premiere Pro"
+  (`presets/premiere/sound-design.md`, starter "Do the sound design.").
+- **Tests:** `NOLGIA_SOUND_DESIGN_LOCAL=1` lets the package's cues carry a
+  local `path` instead of a `url` (the mock API answers such packages; the
+  live proof, `tests/e2e_sound_design.py`, uses it); never set it otherwise.
 
 Previews are uploaded to your NOLGIA library as a PNG, or a JPEG when the PNG
 would be too big for your agent to see inline (about 3.6 MB): `{asset_id,
@@ -300,6 +435,8 @@ another file, and a file it would replace is backed up first.
 | `NOLGIA_TRANSCRIPTS=0` | Premiere Pro: do not open the local link NOLGIA Transcripts connects to |
 | `NOLGIA_TRANSCRIPTS_PORTS` | Premiere Pro: other ports for that link (NOLGIA Transcripts may reach 47731 to 47733) |
 | `NOLGIA_UPIA`, `NOLGIA_TRANSCRIPTS_PACKAGE` | tests: the installer and the package Install transcripts uses |
+| `NOLGIA_SOUND_DESIGN_LOCAL=1` | tests: `sound_design` `place` also takes a local `path` per package cue instead of a `url` |
+| `NOLGIA_SOUND_DOWNLOAD_HOSTS` | where `sound_design` downloads sounds from: comma separated `host` or `host:port` (default `storage.googleapis.com`, where NOLGIA signs them) |
 
 Apps started from the Creative Cloud app or a launcher often do not get your
 environment, so the same keys can go in a file instead:
@@ -334,7 +471,7 @@ keeps it in `dist` (ignored by git):
 
 ```sh
 node tools/build.js --zxpsigncmd /path/to/ZXPSignCmd.exe
-# dist/nolgia-adobe-0.3.1.zxp
+# dist/nolgia-adobe-0.4.0.zxp
 node tools/build-transcripts.js
 # dist/nolgia-premiere-transcripts-<version>.ccx (NOLGIA Transcripts, a plain zip;
 # build.js also puts it inside the .zxp, for the panel's Install transcripts)
@@ -459,6 +596,25 @@ compare, Not now, errors, the three apps against the mock API's catalog); the
 end-to-end test in After Effects 25.6, Premiere Pro 26.2.0 and Illustrator
 30.0.0 on Windows 11; the line, Update and Not now in the real After Effects
 panel. Released without a Mac run: macOS is untested for this version.
+
+0.4.0 (not released yet): sound design in Premiere Pro. The `sound_design`
+command reads the sequence, makes the small preview NOLGIA plans from, puts a
+finished plan's sounds into the person's own project on new audio tracks
+(asking NOLGIA for them itself; saved and backed up first), and takes a run
+out again, leaving anything the editor moved, trimmed, slipped or renamed.
+The "Do the sound design in Premiere Pro" workflow
+(`presets/premiere/sound-design.md`) and its starter in the Premiere panel's
+chat, which says what it does and what a turn costs before anything is sent,
+shown only to an account NOLGIA serves sound design to. Unit tests against
+the mock API (real HTTPS downloads from the allowed hosts included); the
+end-to-end proof in Premiere Pro 26.2 on Windows 11
+(`tests/e2e_sound_design.py`: the mix measured; the project quit, reopened
+and edited on A1 with another sequence on screen before `remove`; a stereo
+sound split into mono clips at import placed as one clip; a clip trimmed at
+its end and one slipped left by `remove`; a place failing after its tracks
+were added leaving none; ambience and effects of one lane on their own
+tracks; an override after an in to out preview on the right frame). Not yet
+run on a Mac: the steps are in `tests/MAC-TEST-0.4.0.md`.
 
 0.2.9 (November 3, 2026): in After Effects, importing the result of a green
 screen or keep-me render (nolgia-api #1423: `matte_layer_asset_id`) also

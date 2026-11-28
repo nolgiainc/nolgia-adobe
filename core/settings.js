@@ -50,6 +50,10 @@ const ENV_KEYS = [
   "NOLGIA_UPIA",
   "NOLGIA_TRANSCRIPTS_PACKAGE",
   "NOLGIA_UPDATE_CHECK",
+  "NOLGIA_SOUND_DESIGN_LOCAL",
+  // Where a sound design package's links may point (comma separated, "host"
+  // or "host:port"); default storage.googleapis.com (core/sounddesign.js).
+  "NOLGIA_SOUND_DOWNLOAD_HOSTS",
 ];
 
 const TRUE = ["1", "true", "yes", "on"];

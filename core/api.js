@@ -316,6 +316,17 @@ class ApiClient {
     ).json();
   }
 
+  // A finished sound design plan's sounds for Premiere Pro (format
+  // manifest): POST /sound-designs/plans/{id}/package. Resolves {status,
+  // body, retryAfter} for the 200 package. While NOLGIA is still making
+  // some sounds (it works up to 100 s per request) the route answers 503
+  // with the code sound_design_package_preparing and Retry-After: 30,
+  // thrown as an ApiError like every other refusal: ask again after it.
+  async packageSoundDesign(planId, body, { timeout = 290 } = {}) {
+    const res = await this.request("POST", "/sound-designs/plans/" + encodeURIComponent(planId) + "/package", body, { timeout });
+    return { status: res.status, body: res.json(), retryAfter: retryAfter(res.headers) };
+  }
+
   async getTranscription(assetId) {
     return (await this.request("GET", "/assets/" + encodeURIComponent(assetId) + "/transcription")).json();
   }
@@ -348,13 +359,48 @@ class ApiClient {
     }
   }
 
-  // Download a signed URL to destPath (never with the bearer). Resolves the
-  // file's first 64 bytes.
-  async download(url, destPath, { maxBytes = null, redirects = 5 } = {}) {
+  // Download a signed URL to destPath (never with the bearer: no
+  // Authorization header). Resolves the file's first 64 bytes. A link, or a
+  // redirect, carrying a user name or password is refused; `httpsOnly`
+  // refuses one that is not HTTPS; `sameHost` refuses a redirect to another
+  // host or port than the link's; `checkLink(url)` answers what is wrong
+  // with a link (each hop), or null; `limitSeconds` is the most the whole
+  // download may take (not reset by each piece that arrives); `quiet`
+  // reports a failure by its status code only, never with what the server
+  // sent.
+  async download(url, destPath, { maxBytes = null, redirects = 5, httpsOnly = false, sameHost = false, checkLink = null, limitSeconds = null, quiet = false } = {}) {
     const tmp = destPath + ".part";
     let current = url;
+    const firstHost = (() => {
+      try {
+        return new URL(url).host.toLowerCase();
+      } catch (e) {
+        return null;
+      }
+    })();
+    const controller = limitSeconds ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), limitSeconds * 1000) : null;
     try {
       for (let hop = 0; ; hop++) {
+        if (httpsOnly && !/^https:\/\//i.test(current)) {
+          throw new ApiError(400, { title: "Not HTTPS", detail: "The download link is not HTTPS." });
+        }
+        let link = null;
+        try {
+          link = new URL(current);
+        } catch (e) {
+          throw new ApiError(400, { title: "Not a link", detail: "The download link is not a web address." });
+        }
+        if (link.username || link.password) {
+          throw new ApiError(400, { title: "Not allowed", detail: "The download was sent to a link with a user name or password." });
+        }
+        if (sameHost && hop > 0 && link.host.toLowerCase() !== firstHost) {
+          throw new ApiError(400, { title: "Redirected elsewhere", detail: "The download was sent to another site." });
+        }
+        const wrong = checkLink ? checkLink(current) : null;
+        if (wrong) {
+          throw new ApiError(400, { title: "Not allowed", detail: (hop > 0 ? "The download was sent elsewhere: " : "") + wrong + "." });
+        }
         const out = fs.createWriteStream(tmp);
         let copied = 0;
         const sink = {
@@ -372,7 +418,11 @@ class ApiClient {
             headers: { "User-Agent": this.userAgent },
             timeout: Math.max(this.timeout, 300),
             sink,
+            signal: controller ? controller.signal : null,
           });
+        } catch (err) {
+          if (controller && controller.signal.aborted) throw new NetworkError("it took longer than " + limitSeconds + " s");
+          throw err;
         } finally {
           await new Promise((resolve) => out.end(resolve));
         }
@@ -380,13 +430,15 @@ class ApiClient {
           current = new URL(res.headers.location, current).toString();
           continue;
         }
-        if (res.status >= 400) {
-          throw new ApiError(res.status, { title: "Download failed", detail: res.body.toString("utf8").slice(0, 500) });
+        if (res.status >= 400 || (quiet && res.status >= 300)) {
+          const detail = quiet ? "" : res.body.toString("utf8").slice(0, 500);
+          throw new ApiError(res.status, { title: "Download failed (HTTP " + res.status + ")", detail });
         }
         break;
       }
       fs.renameSync(tmp, destPath);
     } finally {
+      if (timer) clearTimeout(timer);
       try {
         if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
       } catch (e) {

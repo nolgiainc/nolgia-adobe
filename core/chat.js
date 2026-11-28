@@ -42,6 +42,7 @@ const COST_LINE_RATE = "NOLGIA Agent works right here, each turn from {credits} 
 const COST_LINE_TYPICAL = "NOLGIA Agent works right here, about {typical} credits a turn on your model." + AGENTS_TAIL;
 const COST_LINE_TYPICAL_CAP = "NOLGIA Agent works right here, about {typical} credits a turn on your model, never more than {cap} for its own work." + AGENTS_TAIL;
 
+const PRESET_SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const MAX_CHARS = 8000; // SubmitAgentMessageRequest.content
 const SESSION_NAME_MAX = 80;
 const ROWS_SHOWN = 40;
@@ -476,7 +477,10 @@ class AgentChat {
 
   /** Send a message. Resolves true when NOLGIA took it (the panel then
    *  clears the box), false when it did not (the text stays). */
-  async send(text) {
+  // `preset`: start the new chat under this plugin workflow (a slug such as
+  // premiere-sound-design), so NOLGIA Agent follows it from the first turn.
+  // It only applies to a new chat; an open chat carries on as it is.
+  async send(text, { preset = null } = {}) {
     const content = String(text || "").trim();
     if (!content || this.busy) return false;
     if (content.length > MAX_CHARS) {
@@ -499,7 +503,7 @@ class AgentChat {
         this.owner.bump();
         return false;
       }
-      const accepted = await this._submit(content);
+      const accepted = await this._submit(content, preset);
       if (gen !== this._generation) return true;
       if (accepted.session_id && accepted.session_id !== this.sessionId) {
         this.sessionId = accepted.session_id;
@@ -539,9 +543,10 @@ class AgentChat {
     }
   }
 
-  async _submit(content) {
+  async _submit(content, preset = null) {
     const api = this.owner.api();
-    if (this.sessionId) {
+    // A workflow's starter always opens a new chat under that workflow.
+    if (this.sessionId && !preset) {
       try {
         return await api.submitAgentMessage({ content, session_id: this.sessionId });
       } catch (err) {
@@ -557,12 +562,29 @@ class AgentChat {
     const app = this.owner.app;
     if (!this.owner.instanceId) throw new Error("this " + app.name + " is not connected to NOLGIA yet; turn on Connected and try again");
     this.instanceId = this.owner.instanceId; // the chat is remembered for the instance it is pinned to
-    const session = await api.createAgentSession({ name: sessionName(content, app.name), app: { app: app.app, instance_id: this.owner.instanceId } });
+    const body = { name: sessionName(content, app.name), app: { app: app.app, instance_id: this.owner.instanceId } };
+    let session;
+    if (preset) {
+      if (!PRESET_SLUG.test(preset)) throw new ApiError(400, { title: "Bad Request", code: "workflow_not_published", detail: "not a workflow" });
+      try {
+        session = await api.createAgentSession(Object.assign({ preset_slug: preset }, body));
+      } catch (err) {
+        // A workflow NOLGIA has not published (yet) is refused with 400:
+        // nothing is sent (a chat without the workflow is not what was asked).
+        if (err instanceof ApiError && err.status === 400) {
+          throw new ApiError(400, { title: "Bad Request", code: "workflow_not_published", detail: err.detail });
+        }
+        throw err;
+      }
+    } else {
+      session = await api.createAgentSession(body);
+    }
     const pin = session && session.app;
     if (!session || !session.id || !pin || pin.app !== app.app || pin.instance_id !== this.owner.instanceId) {
       // Never chat in a session that is not pinned here: the pin cannot be added later.
       throw new ApiError(500, { title: "NOLGIA did not pin the new chat to this " + app.name, detail: "Update NOLGIA for " + app.name + ", or try again later." });
     }
+    if (preset && this.sessionId !== session.id) this.rows = new Map();
     this.sessionId = session.id;
     this._remember(this.sessionId);
     return await api.submitAgentMessage({ content, session_id: session.id });
@@ -571,6 +593,13 @@ class AgentChat {
   _submitNotice(err) {
     if (err instanceof ApiError) {
       const detail = String(err.detail || "");
+      if (err.code === "workflow_not_published") {
+        return {
+          kind: "workflow",
+          text: "That workflow is not on NOLGIA yet, so nothing was sent and nothing was charged. Write what you want in the box instead.",
+          action: null,
+        };
+      }
       if (err.status === 404 && /no agent/i.test(detail)) {
         return {
           kind: "no_agent",

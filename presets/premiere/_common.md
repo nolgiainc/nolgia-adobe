@@ -36,7 +36,9 @@ the Film assistant category. The agent works through the NOLGIA Bridge tools
   prefer making new bins and sequences over changing existing ones.
 - Never delete media, never relink, rename or re-time the person's clips, and
   never edit an existing sequence. To work from an existing sequence, duplicate
-  it (`sequence.clone()`) and work on the copy.
+  it (`sequence.clone()`) and work on the copy. The one exception is sound
+  design: `nolgia_app_sound_design` `place` adds new audio tracks and clips to
+  the person's sequence and changes nothing already on it.
 - Media files stay where they are: bins organise the project, not the disk.
 - After each visible change, check it: `nolgia_app_info` for bins and
   sequences, `nolgia_app_preview` (with `sequence` and `frame`) for pictures. Do
